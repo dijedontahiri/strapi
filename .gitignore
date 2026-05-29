@@ -155,14 +155,13 @@ tests/cli/.env
 # AI tools
 ############################
 CLAUDE.local.md
-# Track committed skills under .claude/skills/ and .agents/skills/, but reserve
-# `local/` as a private workspace for drafts and personal skills.
+# Track committed skills under .claude/skills/ and .agents/skills/.
+# Personal drafts go in peer dirs (.claude/local-skills/, .agents/local-skills/),
+# which stay gitignored via the wildcard rules above — no extra entries needed.
 .claude/*
 !.claude/skills
-.claude/skills/local/
 .agents/*
 !.agents/skills
-.agents/skills/local/
 
 ############################
 # Strapi

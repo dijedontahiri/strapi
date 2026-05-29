@@ -226,10 +226,10 @@ yarn prettier:check # check only
 
 ## Agent Skills & Workspace
 
-- **Canonical location** — agent skills live in `.agents/skills/<name>/SKILL.md`. `.claude/skills/<name>` is a symlink that re-exposes a skill for Claude Code; the symlink mode must be `120000` (committed symlink), not a regular file.
-- **`.agents/skills/local/`** and **`.claude/skills/local/`** — gitignored private workspaces. Put drafts and personal skills you don't want to commit here.
+- **Canonical location** — agent skills live in `.agents/skills/<name>/SKILL.md`, one level deep. `.claude/skills/<name>` is a symlink that re-exposes a skill for Claude Code; the symlink mode must be `120000` (committed symlink), not a regular file.
+- **Peer dirs, never nested** — Claude Code's loader discovers skills as `<root>/<name>/SKILL.md` (one level deep), so don't put drafts inside `skills/`. Personal drafts live in `.agents/local-skills/<name>/` (and optionally `.claude/local-skills/<name>/`), peers to `skills/`, gitignored by the `.agents/*` / `.claude/*` wildcards.
 - **`CLAUDE.local.md`** — gitignored personal notes.
-- **Adding a new committed skill** — drop it under `.agents/skills/<name>/` and (optionally) symlink it into `.claude/skills/<name>` with mode `120000`. No `.gitignore` edit needed. Anything outside `local/` is tracked by default, so keep drafts in `local/`.
+- **Adding a new committed skill** — drop it under `.agents/skills/<name>/` and (optionally) symlink it into `.claude/skills/<name>` with mode `120000`. No `.gitignore` edit needed.
 
 ---
 
