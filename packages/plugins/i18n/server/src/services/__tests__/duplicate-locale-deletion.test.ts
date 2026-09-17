@@ -1,5 +1,6 @@
 import type { Core } from '@strapi/types';
 import { emitAudit } from '@strapi/utils';
+import { AUDITED_EVENTS } from '../../constants';
 import localesServiceFactory from '../locales';
 
 jest.mock('@strapi/utils', () => ({ emitAudit: jest.fn() }));
@@ -19,7 +20,7 @@ const query = jest.fn();
 const service = localesServiceFactory();
 
 describe('deleting duplicate locale configuration rows', () => {
-  const originalStrapi = global.strapi;
+  const originalStrapi = global.strapi ?? ({} as Core.Strapi);
 
   beforeEach(() => {
     jest.resetAllMocks();
@@ -43,7 +44,7 @@ describe('deleting duplicate locale configuration rows', () => {
 
     global.strapi = {
       db: { query },
-      plugin: () => ({ service: (name: keyof typeof services) => services[name] }),
+      plugins: { i18n: { services } },
       contentTypes: {
         [articleUID]: { uid: articleUID },
         [pageUID]: { uid: pageUID },
@@ -69,11 +70,11 @@ describe('deleting duplicate locale configuration rows', () => {
     expect(deleteArticles).not.toHaveBeenCalled();
     expect(deletePages).not.toHaveBeenCalled();
     expect(sendMetrics).toHaveBeenCalledTimes(1);
-    expect(emitAudit).toHaveBeenCalledWith({ strapi: global.strapi }, 'locale.delete', {
-      localeId: 42,
-      code: 'fr',
-      name: 'French',
-    });
+    expect(emitAudit).toHaveBeenCalledWith(
+      { strapi: global.strapi },
+      AUDITED_EVENTS.LOCALE_DELETE,
+      { localeId: 42, code: 'fr', name: 'French' }
+    );
   });
 
   test('deletes localized entries when the removed row is the only definition', async () => {
