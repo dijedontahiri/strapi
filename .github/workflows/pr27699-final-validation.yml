@@ -1,0 +1,42 @@
+name: Config path final validation
+
+on:
+  push:
+    branches:
+      - validate/pr27699-final-20260917
+
+permissions:
+  contents: read
+
+jobs:
+  exact-pr-head:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: e598ed8890fb4daa06575b65ced744d4ac5b2897
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install pinned dependencies
+        run: |
+          corepack enable
+          yarn install --immutable
+      - name: Complete package unit suite
+        run: yarn workspace @strapi/typescript-utils test:unit --runInBand
+      - name: Package types
+        if: success() || failure()
+        run: yarn workspace @strapi/typescript-utils test:ts
+      - name: Package lint
+        if: success() || failure()
+        run: yarn workspace @strapi/typescript-utils lint
+      - name: Changed-file formatting
+        if: success() || failure()
+        run: yarn prettier --check packages/utils/typescript/src/utils/get-config-path.ts packages/utils/typescript/src/__tests__/get-config-path.test.ts
