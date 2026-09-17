@@ -47,8 +47,8 @@ jobs:
             base: 3cd7dba3495e094682cc7a8d0eb83bde77e9b0b4
             package: '@strapi/typescript-utils'
           - pr: 26488
-            sha: d20c31a9d383ffffa5de4737aefe2d0fbca8d8e6
-            base: aa62644810e48c3b65e4b15e1055b97cd1c158fa
+            sha: 4b8b356d99fa525aa76dd9608a85b66872833a89
+            base: 5d155b49ce81f86cc4fd16746ffc0ecdb71ceb54
             package: '@strapi/types'
     name: PR ${{ matrix.pr }} / exact head / Node 22
     env:
@@ -73,11 +73,12 @@ jobs:
           git show --no-patch --format=fuller HEAD
           node --version
           git fetch --depth=1 origin "$PR_BASE"
-          git diff --check "$PR_BASE" HEAD
       - name: Install pinned workspace dependencies
+        id: install
         run: |
           corepack enable
-          yarn install --immutable
+          yarn install --immutable > /tmp/install.log 2>&1 || { tail -80 /tmp/install.log; exit 1; }
+          tail -5 /tmp/install.log
       - name: Build package and workspace dependencies
         if: matrix.package != '@strapi/types'
         run: yarn nx run "$PACKAGE:build" --nx-ignore-cycles --parallel=2
@@ -85,19 +86,62 @@ jobs:
         if: matrix.package == '@strapi/types'
         run: yarn nx run @strapi/types:build:types --nx-ignore-cycles --parallel=2
       - name: Complete affected package unit suite
-        if: (success() || failure()) && matrix.package != '@strapi/types'
+        if: (success() || failure()) && steps.install.outcome == 'success' && matrix.package != '@strapi/types'
         run: yarn workspace "$PACKAGE" test:unit --runInBand
       - name: Package type checking
-        if: success() || failure()
+        if: (success() || failure()) && steps.install.outcome == 'success'
         run: yarn workspace "$PACKAGE" test:ts
       - name: Package ESLint
-        if: success() || failure()
+        if: (success() || failure()) && steps.install.outcome == 'success'
         run: yarn workspace "$PACKAGE" lint
-      - name: Formatting of the full PR diff
-        if: success() || failure()
+      - name: Whitespace and formatting of the actual PR diff
+        if: (success() || failure()) && steps.install.outcome == 'success'
         shell: bash
         run: |
+          git diff --check "$PR_BASE" HEAD
           git diff --diff-filter=ACMR --name-only -z "$PR_BASE" HEAD -- '*.ts' '*.tsx' '*.js' '*.json' '*.md' | xargs -0 -r yarn prettier --check
       - name: Assert checks did not modify tracked files
-        if: success() || failure()
+        if: always()
+        run: git diff --exit-code
+
+  media-merge-rehearsal:
+    name: PR 26488 / current develop merge rehearsal / Node 22
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NX_DAEMON: 'false'
+      NODE_OPTIONS: --max-old-space-size=6144
+      HUSKY: '0'
+      STRAPI_TELEMETRY_DISABLED: 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 4b8b356d99fa525aa76dd9608a85b66872833a89
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22
+      - name: Rehearse merge locally without changing any remote branch
+        run: |
+          git fetch origin 3cd7dba3495e094682cc7a8d0eb83bde77e9b0b4
+          git -c user.name='Validation' -c user.email='validation@localhost' merge --no-commit --no-ff 3cd7dba3495e094682cc7a8d0eb83bde77e9b0b4
+          git diff --cached --check
+      - name: Install merged workspace dependencies
+        id: install
+        run: |
+          corepack enable
+          yarn install --immutable > /tmp/install.log 2>&1 || { tail -80 /tmp/install.log; exit 1; }
+          tail -5 /tmp/install.log
+      - name: Build merged types and dependencies
+        run: yarn nx run @strapi/types:build:types --nx-ignore-cycles --parallel=2
+      - name: Type regression suite on merged source
+        if: (success() || failure()) && steps.install.outcome == 'success'
+        run: yarn workspace @strapi/types test:ts
+      - name: ESLint on merged source
+        if: (success() || failure()) && steps.install.outcome == 'success'
+        run: yarn workspace @strapi/types lint
+      - name: Check that compilation did not change merged sources
+        if: (success() || failure()) && steps.install.outcome == 'success'
         run: git diff --exit-code
