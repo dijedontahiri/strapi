@@ -1,0 +1,84 @@
+name: Validate content type option preservation
+
+on:
+  push:
+    branches:
+      - validate/21753-options-20260917
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-21753-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+
+jobs:
+  content-type-builder:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 2799fea0481bcd281a53faa132b601ba8ce03881
+          fetch-depth: 3
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install pinned dependencies
+        run: |
+          corepack enable
+          yarn install --immutable
+      - name: Build content-type-builder and workspace dependencies
+        run: yarn nx run @strapi/content-type-builder:build --nx-ignore-cycles --parallel=2
+      - name: Prove option regressions against upstream develop
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          source=packages/core/content-type-builder/server/src/services/schema-builder/content-type-builder.ts
+          trap 'git restore -- "$source"' EXIT
+          git show 5fcd743f4965ed3efef854b6c36b60bee8fae29b:"$source" > "$source"
+          set +e
+          yarn workspace @strapi/content-type-builder test:unit:vitest --run server/src/services/schema-builder/__tests__/content-type-options.vitest.test.ts --reporter=json --outputFile=/tmp/options-before.json
+          status=$?
+          set -e
+          test "$status" -eq 1
+          node -e "const r=require('/tmp/options-before.json'); if(r.numFailedTests!==2 || r.numPassedTests!==0 || r.numTotalTests!==2) throw Error('Expected both content-type option regressions to fail against upstream'); console.log('Upstream regressions confirmed: 2 failing option-preservation cases');"
+          git restore -- "$source"
+          trap - EXIT
+      - name: Run focused option regression tests
+        run: yarn workspace @strapi/content-type-builder test:unit:vitest --run server/src/services/schema-builder/__tests__/content-type-options.vitest.test.ts
+      - name: Run complete content-type-builder vitest suite
+        run: yarn workspace @strapi/content-type-builder test:unit:vitest
+      - name: Type-check content-type-builder server
+        if: success() || failure()
+        run: yarn workspace @strapi/content-type-builder test:ts:back
+      - name: Lint content-type-builder
+        if: success() || failure()
+        run: yarn workspace @strapi/content-type-builder lint
+      - name: Check changed-file formatting and show formatter diff on failure
+        if: success() || failure()
+        shell: bash
+        run: |
+          files=(
+            packages/core/content-type-builder/server/src/services/schema-builder/content-type-builder.ts
+            packages/core/content-type-builder/server/src/services/schema-builder/__tests__/content-type-options.vitest.test.ts
+          )
+          set +e
+          yarn prettier --check "${files[@]}"
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            yarn prettier --write "${files[@]}"
+            git diff -- "${files[@]}"
+            exit "$status"
+          fi
