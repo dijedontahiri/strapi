@@ -41,13 +41,12 @@ jobs:
           git fetch --depth=1 origin "$VALIDATION_SHA"
           git show "$VALIDATION_SHA:.github/validation/relation-creation.py" > "$RUNNER_TEMP/relation-creation.py"
           git log -1 --format='%H %s'
-      - name: Install immutable dependencies and build code plus declarations
+      - name: Install immutable dependencies and build runtime code
         run: |
           corepack enable
-          yarn install --immutable > /tmp/install.log 2>&1 || { tail -100 /tmp/install.log; exit 1; }
-          tail -5 /tmp/install.log
-          yarn build --parallel=2 > /tmp/build.log 2>&1 || { tail -120 /tmp/build.log; exit 1; }
-          tail -8 /tmp/build.log
+          yarn install --immutable > /tmp/install.log 2>&1 || { tail -80 /tmp/install.log; exit 1; }
+          yarn build:code --parallel=2 > /tmp/build.log 2>&1 || { tail -100 /tmp/build.log; exit 1; }
+          tail -6 /tmp/build.log
       - name: Add real combobox regression tests
         run: |
           python3 "$RUNNER_TEMP/relation-creation.py" tests
@@ -75,13 +74,61 @@ jobs:
           assert.equal(r.numPassedTests, 3);
           assert.equal(r.numFailedTests, 7);
           NODE
-      - name: Apply the focused fix and check all relation tests
+      - name: Check guarded uncontrolled selection before adding state changes
         run: |
           python3 "$RUNNER_TEMP/relation-creation.py" fix
+          python3 <<'PY'
+          from pathlib import Path
+          p = Path('packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx')
+          s = p.read_text()
+          assert s.count('          value=""\n') == 1
+          p.write_text(s.replace('          value=""\n', ''))
+          PY
+          set +e
+          yarn workspace @strapi/content-manager test:front --runInBand --testPathPattern=Relations/tests/RelationCreation.test.tsx --json --outputFile=/tmp/guard-only.json > /tmp/guard-only.log 2>&1
+          status=$?
+          set -e
+          node <<'NODE'
+          const r=require('/tmp/guard-only.json');
+          console.log(JSON.stringify({variant:'guard-only',passed:r.numPassedTests,failed:r.numFailedTests,cases:r.testResults.flatMap(t=>t.assertionResults).map(t=>({name:t.fullName,status:t.status,failures:t.failureMessages.map(m=>m.slice(0,1300))}))},null,2));
+          NODE
+          echo "$status" > /tmp/guard-status
+      - name: Preserve controlled selection when the uncontrolled value is retained
+        run: |
+          if [ "$(cat /tmp/guard-status)" = 0 ]; then
+            echo 'The minimal guard alone passed; no value-state change is needed.'
+          else
+            python3 <<'PY'
+          from pathlib import Path
+          p = Path('packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx')
+          s=p.read_text()
+          old="  const isCreatingRelation = React.useRef(false);"
+          assert s.count(old)==1
+          s=s.replace(old,"  const [selectedValue, setSelectedValue] = React.useState('');\n"+old)
+          old="              isCreatingRelation.current = false;"
+          assert s.count(old)==1
+          s=s.replace(old,old+"\n              setSelectedValue('');")
+          old="          onChange={(relationId) => {\n            if (!isCreatingRelation.current) {"
+          assert s.count(old)==1
+          s=s.replace(old,"          value={selectedValue}\n          onChange={(relationId) => {\n            setSelectedValue(relationId ?? '');\n            if (!isCreatingRelation.current) {")
+          p.write_text(s)
+          PY
+          fi
           yarn prettier --write packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx
-          yarn workspace @strapi/content-manager test:front --runInBand --testPathPattern=FormInputs/Relations/tests --json --outputFile=/tmp/after.json > /tmp/after.log 2>&1 || { tail -180 /tmp/after.log; exit 1; }
-          node -e "const r=require('/tmp/after.json');console.log(JSON.stringify({passed:r.numPassedTests,failed:r.numFailedTests,suites:r.numPassedTestSuites},null,2));"
-          tail -8 /tmp/after.log
+          set +e
+          yarn workspace @strapi/content-manager test:front --runInBand --testPathPattern=FormInputs/Relations/tests --json --outputFile=/tmp/after.json > /tmp/after.log 2>&1
+          status=$?
+          set -e
+          node <<'NODE'
+          const r=require('/tmp/after.json');
+          console.log(JSON.stringify({passed:r.numPassedTests,failed:r.numFailedTests,suites:r.numPassedTestSuites,cases:r.testResults.flatMap(t=>t.assertionResults).filter(t=>t.status==='failed').map(t=>({name:t.fullName,failures:t.failureMessages.map(m=>m.slice(0,1500))}))},null,2));
+          NODE
+          tail -9 /tmp/after.log
+          test "$status" -eq 0
+      - name: Build declarations required by repository hooks
+        run: |
+          yarn build --parallel=2 > /tmp/full-build.log 2>&1 || { tail -100 /tmp/full-build.log; exit 1; }
+          tail -8 /tmp/full-build.log
       - name: Commit only the fix and regression tests with repository hooks enabled
         id: candidate
         run: |
@@ -90,17 +137,18 @@ jobs:
           git add packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/tests/RelationCreation.test.tsx
           git diff --cached --check
           git diff --cached --stat
+          git diff --cached -- packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx
           git commit -m "fix(content-manager): creating relations treats labels as existing ids"
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           git log -1 --format='%H %s'
       - name: Complete content-manager frontend suite on the candidate commit
         run: |
-          yarn workspace @strapi/content-manager test:front --runInBand > /tmp/front.log 2>&1 || { tail -160 /tmp/front.log; exit 1; }
+          yarn workspace @strapi/content-manager test:front --runInBand > /tmp/front.log 2>&1 || { tail -120 /tmp/front.log; exit 1; }
           tail -9 /tmp/front.log
       - name: Rebuild the candidate and run package type checks
         run: |
-          yarn build --parallel=2 > /tmp/full-build.log 2>&1 || { tail -120 /tmp/full-build.log; exit 1; }
-          tail -8 /tmp/full-build.log
+          yarn build --parallel=2 > /tmp/rebuild.log 2>&1 || { tail -100 /tmp/rebuild.log; exit 1; }
+          tail -8 /tmp/rebuild.log
           yarn workspace @strapi/content-manager test:ts > /tmp/types.log 2>&1 || { tail -100 /tmp/types.log; exit 1; }
           tail -5 /tmp/types.log
       - name: Content-manager lint and changed-file formatting
@@ -137,7 +185,7 @@ jobs:
           corepack enable
           yarn install --immutable > /tmp/install.log 2>&1 || { tail -80 /tmp/install.log; exit 1; }
           yarn build --parallel=2 > /tmp/build.log 2>&1 || { tail -100 /tmp/build.log; exit 1; }
-          yarn workspace @strapi/content-manager test:front --runInBand > /tmp/front.log 2>&1 || { tail -140 /tmp/front.log; exit 1; }
+          yarn workspace @strapi/content-manager test:front --runInBand > /tmp/front.log 2>&1 || { tail -120 /tmp/front.log; exit 1; }
           tail -9 /tmp/front.log
           yarn workspace @strapi/content-manager test:ts > /tmp/types.log 2>&1 || { tail -100 /tmp/types.log; exit 1; }
           yarn workspace @strapi/content-manager lint > /tmp/lint.log 2>&1 || { tail -100 /tmp/lint.log; exit 1; }
