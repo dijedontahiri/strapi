@@ -1,0 +1,39 @@
+name: Contribution validation
+
+on:
+  push:
+    branches:
+      - validate/strapi-fixes-20260917
+
+permissions:
+  contents: read
+
+concurrency:
+  group: contribution-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typescript-utils:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22
+      - name: Install the pinned workspace dependencies
+        run: |
+          corepack enable
+          yarn install --immutable
+      - name: Run the TypeScript utilities unit suite
+        run: yarn workspace @strapi/typescript-utils test:unit --runInBand
+      - name: Check TypeScript utilities types
+        run: yarn workspace @strapi/typescript-utils test:ts
+      - name: Check changed-file formatting
+        run: |
+          yarn prettier --check packages/utils/typescript/tsconfigs/server.json packages/utils/typescript/src/__tests__/server-config.test.ts
+      - name: Lint TypeScript utilities
+        run: yarn workspace @strapi/typescript-utils lint
