@@ -364,7 +364,7 @@ class LocalStrapiDestinationProvider implements IDestinationProvider {
   }
 
   async createLinksWriteStream(): Promise<Writable> {
-    this.#reportInfo('creating links write stream');
+    this.#reportInfo('creating links stream');
     if (!this.strapi) {
       throw new Error('Not able to stream links. Strapi instance not found');
     }
