@@ -28,7 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 0441708be526d0913979b80b11d2d6dff15314c7
+          ref: e087750fcd4d876df72102b288f231116b8ab481
           fetch-depth: 3
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
@@ -65,20 +65,6 @@ jobs:
       - name: Lint data-transfer
         if: success() || failure()
         run: yarn workspace @strapi/data-transfer lint
-      - name: Check changed-file formatting and show formatter diff on failure
+      - name: Check changed-file formatting
         if: success() || failure()
-        shell: bash
-        run: |
-          files=(
-            packages/core/data-transfer/src/strapi/providers/local-destination/index.ts
-            packages/core/data-transfer/src/strapi/providers/local-destination/__tests__/assets-symlink.test.ts
-          )
-          set +e
-          yarn prettier --check "${files[@]}"
-          status=$?
-          set -e
-          if [ "$status" -ne 0 ]; then
-            yarn prettier --write "${files[@]}"
-            git diff -- "${files[@]}"
-            exit "$status"
-          fi
+        run: yarn prettier --check packages/core/data-transfer/src/strapi/providers/local-destination/index.ts packages/core/data-transfer/src/strapi/providers/local-destination/__tests__/assets-symlink.test.ts
