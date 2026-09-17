@@ -1,0 +1,113 @@
+name: Relation creation reproduction
+
+on:
+  push:
+    branches:
+      - validate/27246-relation-creation-20260917
+
+permissions:
+  contents: read
+
+concurrency:
+  group: relation-creation-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+
+jobs:
+  reproduce:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 5fcd743f4965ed3efef854b6c36b60bee8fae29b
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22
+      - name: Install immutable dependencies
+        run: |
+          corepack enable
+          yarn install --immutable
+      - name: Build runtime dependencies for the real frontend harness
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: yarn build:code --parallel=2
+      - name: Existing relation tests on unmodified upstream
+        run: yarn workspace @strapi/content-manager test:front --runInBand --testPathPattern=FormInputs/Relations/tests/Relations.test.tsx
+      - name: Add real relation creation interaction probes
+        run: |
+          cat >> packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/tests/Relations.test.tsx <<'TEST'
+
+          describe('relation creation regression', () => {
+            it.each([false, true])('opens creation without treating typed text as an existing relation (nested=%s)', async (nested) => {
+              const errorSpy = jest.spyOn(console, 'error');
+              try {
+                server.use(
+                  http.get('/content-manager/relations/:model/:fieldName', () =>
+                    HttpResponse.json({
+                      results: [],
+                      pagination: { page: 1, pageCount: 1, pageSize: 10, total: 0 },
+                    })
+                  )
+                );
+                const input = (
+                  <RelationsInput
+                    attribute={{
+                      type: 'relation',
+                      relation: 'manyToMany',
+                      target: 'api::category.category',
+                      inversedBy: 'relation_locales',
+                      // @ts-expect-error - this is what the API returns
+                      targetModel: 'api::category.category',
+                      relationType: 'manyToMany',
+                    }}
+                    label="creation probe"
+                    mainField={{ name: 'name', type: 'string' }}
+                    name={nested ? 'blocks.0.relatedCategory' : 'relations'}
+                    type="relation"
+                  />
+                );
+                const { user } = renderRTL(
+                  nested ? (
+                    <ComponentProvider id={99} level={1} uid="blog.missing-component" type="repeatable">
+                      {input}
+                    </ComponentProvider>
+                  ) : input,
+                  {
+                    renderOptions: {
+                      wrapper: ({ children }) => (
+                        <Routes>
+                          <Route path="/content-manager/:collectionType/:slug/:id" element={children} />
+                        </Routes>
+                      ),
+                    },
+                    initialEntries: ['/content-manager/collection-types/api::address.address/12345'],
+                  }
+                );
+                const combobox = await screen.findByRole('combobox', { name: /creation probe/ });
+                await user.type(combobox, 'New category not in options');
+                const createOption = await screen.findByText('Create a relation');
+                await user.click(createOption);
+                await screen.findByRole('dialog');
+                expect(errorSpy.mock.calls.filter((args) => String(args[0]).includes("You've tried to add a relation"))).toEqual([]);
+                expect(screen.queryByText('An error occurred while trying to add the relation.')).not.toBeInTheDocument();
+              } finally {
+                errorSpy.mockRestore();
+              }
+            });
+          });
+          TEST
+      - name: Reproduce using the unchanged implementation and installed design system
+        run: yarn workspace @strapi/content-manager test:front --runInBand --testPathPattern=FormInputs/Relations/tests/Relations.test.tsx --testNamePattern='relation creation regression' --json --outputFile=/tmp/relation-probe.json
+      - name: Print reproduction results and installed combobox metadata
+        if: always()
+        run: |
+          if [ -f /tmp/relation-probe.json ]; then
+            node -e "const r=require('/tmp/relation-probe.json'); console.log(JSON.stringify({passed:r.numPassedTests,failed:r.numFailedTests,results:r.testResults.map(t=>({file:t.name,message:t.message,assertions:t.assertionResults.map(a=>({name:a.fullName,status:a.status,failures:a.failureMessages}))}))},null,2));"
+          fi
+          git status --short
