@@ -13,7 +13,7 @@ const model = (name, draftAndPublish) => ({
   displayName: name,
   singularName: name,
   pluralName: `${name}s`,
-  options: { draftAndPublish },
+  draftAndPublish,
   pluginOptions: { i18n: { localized: true } },
   attributes: { title: { type: 'string' } },
 });
@@ -26,9 +26,7 @@ describe('duplicate locale deletion preserves content by code', () => {
   let originalEnglishLocaleId;
 
   const readContent = () =>
-    Promise.all(
-      contentUIDs.map((uid) => strapi.db.query(uid).findMany({ orderBy: { id: 'asc' } }))
-    );
+    Promise.all(contentUIDs.map((uid) => strapi.db.query(uid).findMany({ orderBy: { id: 'asc' } })));
 
   const clean = async () => {
     for (const uid of contentUIDs) {
@@ -65,6 +63,8 @@ describe('duplicate locale deletion preserves content by code', () => {
     const english = await localeService.findByCode('en');
     originalEnglishLocaleId = english.id;
     await localeService.setDefaultLocale({ code: 'en' });
+    expect(strapi.contentTypes[articleUID].options.draftAndPublish).toBe(true);
+    expect(strapi.contentTypes[recordUID].options.draftAndPublish).toBe(false);
   });
 
   beforeEach(async () => {
@@ -87,7 +87,9 @@ describe('duplicate locale deletion preserves content by code', () => {
     const locales = [await createLocale('fr'), await createLocale('fr')];
     await seedContent();
     const before = await readContent();
-    expect(before[0].filter((entry) => entry.locale === 'fr')).toHaveLength(2);
+    const frenchArticles = before[0].filter((entry) => entry.locale === 'fr');
+    expect(frenchArticles).toHaveLength(2);
+    expect(frenchArticles.filter((entry) => entry.publishedAt === null)).toHaveLength(1);
     expect(before[1].filter((entry) => entry.locale === 'fr')).toHaveLength(1);
 
     const res = await rq({ url: `/i18n/locales/${locales[index].id}`, method: 'DELETE' });
