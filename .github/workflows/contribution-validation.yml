@@ -13,7 +13,73 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  typescript-utils:
+  regression-tests:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install pinned workspace dependencies
+        run: |
+          corepack enable
+          yarn install --immutable
+      - name: Prove each regression fails against the original implementation
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          git fetch --depth=1 origin 3cd7dba3495e094682cc7a8d0eb83bde77e9b0b4
+          check_regression() {
+            workspace="$1"
+            test_file="$2"
+            source_file="$3"
+            git show "3cd7dba3495e094682cc7a8d0eb83bde77e9b0b4:$source_file" > "$source_file"
+            if yarn workspace "$workspace" test:unit --runInBand --testTimeout=1500 --testPathPattern="$test_file"; then
+              git restore -- "$source_file"
+              echo "Regression unexpectedly passed: $test_file"
+              exit 1
+            fi
+            git restore -- "$source_file"
+          }
+          check_regression @strapi/typescript-utils server-config.test.ts packages/utils/typescript/tsconfigs/server.json
+          check_regression @strapi/typescript-utils get-config-path.test.ts packages/utils/typescript/src/utils/get-config-path.ts
+          check_regression create-strapi-app package-types.test.ts packages/cli/create-strapi-app/package.json
+          check_regression @strapi/utils stream-to-buffer.test.ts packages/core/utils/src/file.ts
+          check_regression @strapi/utils get-stream-size.test.ts packages/core/utils/src/file.ts
+          git diff --exit-code
+      - name: Complete TypeScript utilities suite
+        if: success() || failure()
+        run: yarn workspace @strapi/typescript-utils test:unit --runInBand
+      - name: Complete core utilities suite
+        if: success() || failure()
+        run: yarn workspace @strapi/utils test:unit --runInBand
+      - name: Complete create-strapi-app suite
+        if: success() || failure()
+        run: yarn workspace create-strapi-app test:unit --runInBand
+      - name: Type-check utilities
+        if: success() || failure()
+        run: |
+          yarn workspace @strapi/typescript-utils test:ts
+          yarn workspace @strapi/utils test:ts
+      - name: Lint affected packages
+        if: success() || failure()
+        run: |
+          yarn workspace @strapi/typescript-utils lint
+          yarn workspace @strapi/utils lint
+          yarn workspace create-strapi-app lint
+      - name: Check changed-file formatting
+        if: success() || failure()
+        run: |
+          yarn prettier --check packages/utils/typescript/tsconfigs/server.json packages/utils/typescript/src/__tests__/server-config.test.ts packages/utils/typescript/src/utils/get-config-path.ts packages/utils/typescript/src/__tests__/get-config-path.test.ts packages/core/utils/src/file.ts packages/core/utils/src/__tests__/stream-to-buffer.test.ts packages/core/utils/src/__tests__/get-stream-size.test.ts packages/cli/create-strapi-app/package.json packages/cli/create-strapi-app/src/__tests__/package-types.test.ts
+  cli-build:
     if: github.repository == 'dijedontahiri/strapi'
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -24,28 +90,14 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 22
-      - name: Install the pinned workspace dependencies
+      - name: Install pinned workspace dependencies
         run: |
           corepack enable
           yarn install --immutable
-      - name: Prepare reproducible source and formatting artifacts
+      - name: Build CLI and its workspace dependencies
+        run: yarn nx run create-strapi-app:build --nx-ignore-cycles --parallel=2
+      - name: Check create-strapi-app types
+        run: yarn workspace create-strapi-app test:ts
+      - name: Verify the real emitted declaration entry
         run: |
-          mkdir -p /tmp/strapi-contribution-artifacts
-          git archive --format=tar.gz --output=/tmp/strapi-contribution-artifacts/source.tar.gz HEAD
-          tar -czf /tmp/strapi-contribution-artifacts/compiler-formatter.tar.gz node_modules/typescript node_modules/prettier
-          yarn prettier packages/utils/typescript/src/__tests__/server-config.test.ts > /tmp/strapi-contribution-artifacts/server-config.formatted.ts
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: contribution-source
-          path: /tmp/strapi-contribution-artifacts/
-          retention-days: 3
-      - name: Run the TypeScript utilities unit suite
-        run: yarn workspace @strapi/typescript-utils test:unit --runInBand
-      - name: Check TypeScript utilities types
-        run: yarn workspace @strapi/typescript-utils test:ts
-      - name: Check changed-file formatting
-        run: |
-          yarn prettier --check packages/utils/typescript/tsconfigs/server.json packages/utils/typescript/src/__tests__/server-config.test.ts
-      - name: Lint TypeScript utilities
-        if: success() || failure()
-        run: yarn workspace @strapi/typescript-utils lint
+          node -e "const fs = require('node:fs'); const p = require('./packages/cli/create-strapi-app/package.json'); const path = require('node:path'); const entry = path.resolve('packages/cli/create-strapi-app', p.types); if (!fs.existsSync(entry)) throw Error('Missing declared type entry: ' + entry); console.log(entry);"
