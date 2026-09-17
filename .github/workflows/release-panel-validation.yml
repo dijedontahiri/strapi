@@ -1,0 +1,93 @@
+name: Release panel contribution validation
+
+on:
+  push:
+    branches: [validate/release-panel-20260917]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-panel-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FIX_SHA: 4cb73740b321ed70d45e105d8133bd84a99b5eea
+  BASE_SHA: 3cd7dba3495e094682cc7a8d0eb83bde77e9b0b4
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+  NODE_OPTIONS: --max-old-space-size=6144
+
+jobs:
+  validate:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.FIX_SHA }}
+          fetch-depth: 3
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install pinned dependencies and build code and declarations
+        run: |
+          corepack enable
+          yarn install --immutable > /tmp/install.log 2>&1 || { tail -100 /tmp/install.log; exit 1; }
+          yarn nx run @strapi/content-releases:build --nx-ignore-cycles --parallel=2 > /tmp/build.log 2>&1 || { tail -160 /tmp/build.log; exit 1; }
+          tail -10 /tmp/build.log
+      - name: Prove the edit-only permission regression fails before the fix
+        if: matrix.node == 22
+        run: |
+          source=packages/core/content-releases/admin/src/components/ReleasesPanel.tsx
+          trap 'git restore -- "$source"' EXIT
+          git show "$BASE_SHA:$source" > "$source"
+          set +e
+          yarn workspace @strapi/content-releases test:front --runInBand --testPathPattern=ReleasesPanel.test.tsx --json --outputFile=/tmp/before.json > /tmp/before.log 2>&1
+          status=$?
+          set -e
+          tail -100 /tmp/before.log
+          test "$status" -eq 1
+          node <<'NODE'
+          const assert = require('node:assert/strict');
+          const r = require('/tmp/before.json');
+          assert.equal(r.numTotalTests, 9);
+          assert.equal(r.numRuntimeErrorTestSuites, 0);
+          assert.equal(r.numFailedTests, 1);
+          assert.equal(r.numPassedTests, 8);
+          const t = r.testResults.flatMap(s => s.assertionResults).find(t => t.title === 'allows editing a release without permission to remove entries');
+          assert.equal(t.status, 'failed');
+          assert.match(t.failureMessages.join('\n'), /Release action options/);
+          console.log('Original: edit-only menu test fails; eight controls pass');
+          NODE
+          git restore -- "$source"
+          trap - EXIT
+      - name: Run complete content-releases frontend suite
+        if: success() || failure()
+        run: |
+          yarn workspace @strapi/content-releases test:front --runInBand --json --outputFile=/tmp/front.json > /tmp/front.log 2>&1 || { tail -180 /tmp/front.log; exit 1; }
+          tail -30 /tmp/front.log
+          node -e 'const r=require("/tmp/front.json"); console.log(JSON.stringify({passed:r.numPassedTests,failed:r.numFailedTests,suites:r.numPassedTestSuites,skipped:r.numPendingTests}))'
+      - name: Run content-releases server unit suite
+        if: success() || failure()
+        run: |
+          yarn workspace @strapi/content-releases test:unit --runInBand --json --outputFile=/tmp/unit.json > /tmp/unit.log 2>&1 || { tail -150 /tmp/unit.log; exit 1; }
+          tail -25 /tmp/unit.log
+      - name: Check frontend types
+        if: success() || failure()
+        run: yarn workspace @strapi/content-releases test:ts:front
+      - name: Lint the whole package
+        if: success() || failure()
+        run: yarn workspace @strapi/content-releases lint
+      - name: Check changed-file formatting and diff
+        if: success() || failure()
+        run: |
+          files=(packages/core/content-releases/admin/src/components/ReleasesPanel.tsx packages/core/content-releases/admin/src/components/tests/ReleasesPanel.test.tsx)
+          yarn prettier --check "${files[@]}" || { yarn prettier --write "${files[@]}"; git diff -- "${files[@]}"; exit 1; }
+          git diff --check "$BASE_SHA" HEAD
