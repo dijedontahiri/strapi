@@ -1,45 +1,94 @@
-name: Media type compatibility reproduction
+name: Media input compatibility verification
 on:
   push:
     branches: [validate/media-registry-probe-20260917]
 permissions:
   contents: read
+concurrency:
+  group: media-compatibility-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  reproduce:
+  verify:
     if: github.repository == 'dijedontahiri/strapi'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
     env:
       NX_DAEMON: 'false'
       HUSKY: '0'
       NODE_OPTIONS: --max-old-space-size=6144
+      FIX_HEAD: 4b8b356d99fa525aa76dd9608a85b66872833a89
+      OLD_HEAD: d20c31a9d383ffffa5de4737aefe2d0fbca8d8e6
+      DIFF_BASE: 5d155b49ce81f86cc4fd16746ffc0ecdb71ceb54
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: d20c31a9d383ffffa5de4737aefe2d0fbca8d8e6
+          ref: 4b8b356d99fa525aa76dd9608a85b66872833a89
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: 22
-      - name: Install and build real workspace types
+          node-version: ${{ matrix.node }}
+      - name: Exact source and original comparison base
+        run: |
+          test "$(git rev-parse HEAD)" = "$FIX_HEAD"
+          git fetch --depth=1 origin "$OLD_HEAD" "$DIFF_BASE"
+          git diff --stat "$DIFF_BASE" HEAD
+          git diff --check "$DIFF_BASE" HEAD
+          node --version
+      - name: Install pinned workspace dependencies
+        id: install
         run: |
           corepack enable
-          yarn install --immutable
-          yarn nx run @strapi/types:build:types --nx-ignore-cycles --parallel=2
-      - name: Create isolated compiler fixtures
+          yarn install --immutable > /tmp/install.log 2>&1 || { tail -80 /tmp/install.log; exit 1; }
+          tail -5 /tmp/install.log
+      - name: Build declarations and dependencies
+        run: yarn nx run @strapi/types:build:types --nx-ignore-cycles --parallel=2
+      - name: Old input mapping must fail the new regression cases
+        id: red
+        shell: bash
         run: |
-          mkdir -p packages/core/types/tests/media-probe
-          cat > packages/core/types/tests/media-probe/tsconfig.json <<'EOF'
+          for path in packages/core/types/src/modules/{documents,entity-service}/params/attributes/index.ts; do
+            git show "$OLD_HEAD:$path" > "$path"
+          done
+          set +e
+          yarn workspace @strapi/types test:ts > /tmp/before.log 2>&1
+          result=$?
+          set -e
+          cat /tmp/before.log
+          test "$result" -ne 0
+          grep -E 'media.test.ts.*error TS(2322|2741)' /tmp/before.log
+          echo 'Confirmed: real package compiler rejects the new valid-input cases on the old mapping.'
+      - name: Restore exact fixed source
+        if: always() && steps.install.outcome == 'success'
+        run: git restore --source="$FIX_HEAD" packages/core/types/src/modules/documents/params/attributes/index.ts packages/core/types/src/modules/entity-service/params/attributes/index.ts
+      - name: Complete type regression suite on fixed source
+        if: (success() || failure()) && steps.install.outcome == 'success'
+        run: yarn workspace @strapi/types test:ts
+      - name: Package ESLint
+        if: (success() || failure()) && steps.install.outcome == 'success'
+        run: yarn workspace @strapi/types lint
+      - name: Full PR changed-file formatting
+        if: (success() || failure()) && steps.install.outcome == 'success'
+        shell: bash
+        run: git diff --diff-filter=ACMR --name-only -z "$DIFF_BASE" HEAD -- '*.ts' '*.json' | xargs -0 -r yarn prettier --check
+      - name: Isolated registry without upload uses normal repository compiler settings
+        if: (success() || failure()) && steps.install.outcome == 'success'
+        run: |
+          mkdir -p packages/core/types/tests/media-control
+          cat > packages/core/types/tests/media-control/tsconfig.json <<'EOF'
           {
             "extends": "../../tsconfig.json",
             "include": ["fixture.ts"],
-            "exclude": ["../../src/__tests__"],
-            "compilerOptions": { "noEmit": true, "skipLibCheck": false }
+            "exclude": ["../../src/__tests__"]
           }
           EOF
-          cat > packages/core/types/tests/media-probe/fixture.ts <<'EOF'
+          cat > packages/core/types/tests/media-control/fixture.ts <<'EOF'
           import type * as Schema from '../../src/schema';
           import type * as Struct from '../../src/struct';
+          import type { GetValues } from '../../src/modules/documents/params/attributes';
           interface Article extends Struct.CollectionTypeSchema {
             attributes: {
               title: Schema.Attribute.String;
@@ -48,41 +97,14 @@ jobs:
           }
           declare module '../../src/public/registries' {
             interface ContentTypeSchemas {
-              'api::media-probe.media-probe': Article;
+              'api::media-control.media-control': Article;
             }
           }
+          export const input: GetValues<'api::media-control.media-control'> = { cover: 1 };
           export type Media = Schema.Attribute.MediaValue<false>;
           EOF
-          # Fixture is two directories below tests; source is three levels up.
-          sed -i "s|'../../src/|'../../src/|g" packages/core/types/tests/media-probe/fixture.ts
-          # Paths from tests/media-probe to src are ../../src, as above.
-      - name: Reproduce missing upload registry
-        id: missing
-        shell: bash
-        run: |
-          set +e
-          yarn workspace @strapi/types exec tsc -p tests/media-probe/tsconfig.json --pretty false > /tmp/missing-registry.log 2>&1
-          result=$?
-          set -e
-          cat /tmp/missing-registry.log
-          test "$result" -ne 0
-          grep -E 'media.ts\([0-9]+,[0-9]+\): error TS2344' /tmp/missing-registry.log
-          echo 'Confirmed: the current PR rejects a valid registry without plugin::upload.file.'
-      - name: Reproduce numeric media input rejection with upload registered
-        if: success() || failure()
-        shell: bash
-        run: |
-          cp packages/core/types/src/__tests__/media.test.ts packages/core/types/tests/media-probe/fixture.ts
-          sed -i "s|'../|'../../src/|g" packages/core/types/tests/media-probe/fixture.ts
-          cat >> packages/core/types/tests/media-probe/fixture.ts <<'EOF'
-          export const numericCover: Modules.Documents.Params.Data.Input<'api::article.article'> = { cover: 1 };
-          export const numericGallery: Modules.Documents.Params.Data.Input<'api::article.article'> = { gallery: [1, 2] };
-          EOF
-          set +e
-          yarn workspace @strapi/types exec tsc -p tests/media-probe/tsconfig.json --pretty false > /tmp/media-input.log 2>&1
-          result=$?
-          set -e
-          cat /tmp/media-input.log
-          test "$result" -ne 0
-          grep -E 'fixture.ts.*error TS2322' /tmp/media-input.log
-          echo 'Confirmed: valid numeric media IDs are rejected by the current PR input types.'
+          yarn tsc -p packages/core/types/tests/media-control/tsconfig.json --pretty false
+          rm -r packages/core/types/tests/media-control
+      - name: Verify tracked source remains the tested commit
+        if: always() && steps.install.outcome == 'success'
+        run: git diff --exit-code
