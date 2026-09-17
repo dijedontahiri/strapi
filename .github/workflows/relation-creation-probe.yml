@@ -1,4 +1,4 @@
-name: Relation creation reproduction
+name: Relation creation contribution validation
 
 on:
   push:
@@ -15,12 +15,17 @@ concurrency:
 env:
   NX_DAEMON: 'false'
   STRAPI_TELEMETRY_DISABLED: 'true'
+  NODE_OPTIONS: --max-old-space-size=6144
 
 jobs:
-  reproduce:
+  validate-and-publish:
     if: github.repository == 'dijedontahiri/strapi'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
+    permissions:
+      contents: write
+    outputs:
+      sha: ${{ steps.candidate.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -32,82 +37,282 @@ jobs:
       - name: Install immutable dependencies
         run: |
           corepack enable
-          yarn install --immutable
-      - name: Build runtime dependencies for the real frontend harness
-        env:
-          NODE_OPTIONS: --max-old-space-size=6144
-        run: yarn build:code --parallel=2
-      - name: Existing relation tests on unmodified upstream
-        run: yarn workspace @strapi/content-manager test:front --runInBand --testPathPattern=FormInputs/Relations/tests/Relations.test.tsx
-      - name: Add real relation creation interaction probes
+          yarn install --immutable > /tmp/install.log 2>&1 || { tail -100 /tmp/install.log; exit 1; }
+          tail -5 /tmp/install.log
+      - name: Build all runtime dependencies
         run: |
-          cat >> packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/tests/Relations.test.tsx <<'TEST'
+          yarn build:code --parallel=2 > /tmp/build.log 2>&1 || { tail -100 /tmp/build.log; exit 1; }
+          tail -6 /tmp/build.log
+      - name: Add regression tests using the real combobox and form
+        run: |
+          cat > packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/tests/RelationCreation.test.tsx <<'TEST'
+          import { Form, useField } from '@strapi/admin/strapi-admin';
+          import { render as renderRTL, screen, server, waitFor } from '@tests/utils';
+          import { http, HttpResponse } from 'msw';
+          import { Route, Routes } from 'react-router-dom';
 
-          describe('relation creation regression', () => {
-            it.each([false, true])('opens creation without treating typed text as an existing relation (nested=%s)', async (nested) => {
-              const errorSpy = jest.spyOn(console, 'error');
-              try {
-                server.use(
-                  http.get('/content-manager/relations/:model/:fieldName', () =>
-                    HttpResponse.json({
-                      results: [],
-                      pagination: { page: 1, pageCount: 1, pageSize: 10, total: 0 },
-                    })
-                  )
-                );
-                const input = (
-                  <RelationsInput
-                    attribute={{
-                      type: 'relation',
-                      relation: 'manyToMany',
-                      target: 'api::category.category',
-                      inversedBy: 'relation_locales',
-                      // @ts-expect-error - this is what the API returns
-                      targetModel: 'api::category.category',
-                      relationType: 'manyToMany',
-                    }}
-                    label="creation probe"
-                    mainField={{ name: 'name', type: 'string' }}
-                    name={nested ? 'blocks.0.relatedCategory' : 'relations'}
-                    type="relation"
-                  />
-                );
-                const { user } = renderRTL(
-                  nested ? (
-                    <ComponentProvider id={99} level={1} uid="blog.missing-component" type="repeatable">
-                      {input}
-                    </ComponentProvider>
-                  ) : input,
-                  {
-                    renderOptions: {
-                      wrapper: ({ children }) => (
-                        <Routes>
-                          <Route path="/content-manager/:collectionType/:slug/:id" element={children} />
-                        </Routes>
-                      ),
+          import { ComponentProvider } from '../../ComponentContext';
+          import { RelationsInput } from '../Relations';
+
+          const ConnectionProbe = ({ name }: { name: string }) => {
+            const field = useField<{ connect?: Array<{ id: number }> }>(name);
+
+            return (
+              <output data-testid="connected-ids">
+                {JSON.stringify(field.value?.connect?.map(({ id }) => id) ?? [])}
+              </output>
+            );
+          };
+
+          const renderRelation = (scope: 'root' | 'saved-component' | 'new-component' = 'root') => {
+            const nested = scope !== 'root';
+            const name = nested ? 'blocks.0.relatedCategory' : 'relations';
+            const emptyRelation = { connect: [], disconnect: [] };
+            const initialValues = nested
+              ? { blocks: [{ relatedCategory: emptyRelation }] }
+              : { relations: emptyRelation };
+
+            server.use(
+              http.get('/content-manager/relations/:model/:id/:fieldName', () =>
+                HttpResponse.json({
+                  results: [],
+                  pagination: { page: 1, pageCount: 1, pageSize: 10, total: 0 },
+                })
+              ),
+              http.get('/content-manager/relations/:model/:fieldName', () =>
+                HttpResponse.json({
+                  results: [
+                    {
+                      id: 1,
+                      documentId: 'existing-category',
+                      name: 'Existing category 1',
+                      status: 'published',
+                      locale: null,
                     },
-                    initialEntries: ['/content-manager/collection-types/api::address.address/12345'],
-                  }
-                );
-                const combobox = await screen.findByRole('combobox', { name: /creation probe/ });
-                await user.type(combobox, 'New category not in options');
-                const createOption = await screen.findByText('Create a relation');
-                await user.click(createOption);
-                await screen.findByRole('dialog');
-                expect(errorSpy.mock.calls.filter((args) => String(args[0]).includes("You've tried to add a relation"))).toEqual([]);
-                expect(screen.queryByText('An error occurred while trying to add the relation.')).not.toBeInTheDocument();
-              } finally {
-                errorSpy.mockRestore();
+                  ],
+                  pagination: { page: 1, pageCount: 1, pageSize: 10, total: 1 },
+                })
+              )
+            );
+
+            const field = (
+              <>
+                <RelationsInput
+                  attribute={{
+                    type: 'relation',
+                    relation: 'manyToMany',
+                    target: 'api::category.category',
+                    inversedBy: 'relation_locales',
+                    // @ts-expect-error - this is what the API returns
+                    targetModel: 'api::category.category',
+                    relationType: 'manyToMany',
+                  }}
+                  label="Category relations"
+                  mainField={{ name: 'name', type: 'string' }}
+                  name={name}
+                  type="relation"
+                />
+                <ConnectionProbe name={name} />
+              </>
+            );
+
+            return renderRTL(
+              nested ? (
+                <ComponentProvider
+                  id={scope === 'saved-component' ? 99 : undefined}
+                  level={1}
+                  uid="blog.missing-component"
+                  type="dynamiczone"
+                >
+                  {field}
+                </ComponentProvider>
+              ) : (
+                field
+              ),
+              {
+                renderOptions: {
+                  wrapper: ({ children }) => (
+                    <Routes>
+                      <Route
+                        path="/content-manager/:collectionType/:slug/:id"
+                        element={
+                          <Form method="POST" onSubmit={jest.fn()} initialValues={initialValues}>
+                            {children}
+                          </Form>
+                        }
+                      />
+                    </Routes>
+                  ),
+                },
+                initialEntries: ['/content-manager/collection-types/api::address.address/12345'],
               }
+            );
+          };
+
+          describe('relation creation', () => {
+            it.each([
+              ['root', 'pointer'],
+              ['saved-component', 'pointer'],
+              ['new-component', 'pointer'],
+              ['root', 'keyboard'],
+              ['saved-component', 'keyboard'],
+            ] as const)('opens the creation modal from %s with the %s without connecting text', async (scope, interaction) => {
+              const { user } = renderRelation(scope);
+              const combobox = await screen.findByRole('combobox', { name: /Category relations/ });
+              await user.type(combobox, 'New category');
+              const createOption = await screen.findByText('Create a relation');
+              if (interaction === 'pointer') {
+                await user.click(createOption);
+              } else {
+                await user.keyboard('{ArrowDown}{Enter}');
+              }
+              expect(await screen.findByRole('dialog')).toBeInTheDocument();
+              expect(screen.getByTestId('connected-ids')).toHaveTextContent('[]');
+              expect(screen.queryByText('An error occurred while trying to add the relation.')).not.toBeInTheDocument();
+            });
+
+            it.each(['root', 'saved-component'] as const)('does not connect an existing numeric ID when creating a numeric label in %s', async (scope) => {
+              const { user } = renderRelation(scope);
+              const combobox = await screen.findByRole('combobox', { name: /Category relations/ });
+              await user.type(combobox, '1');
+              await screen.findByRole('option', { name: /Existing category 1/ });
+              await user.click(await screen.findByText('Create a relation'));
+              expect(await screen.findByRole('dialog')).toBeInTheDocument();
+              expect(screen.getByTestId('connected-ids')).toHaveTextContent('[]');
+              await user.click(screen.getByRole('button', { name: 'Close modal' }));
+              await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+              await user.clear(combobox);
+              await user.click(combobox);
+              await user.click(await screen.findByRole('option', { name: /Existing category 1/ }));
+              await waitFor(() => expect(screen.getByTestId('connected-ids')).toHaveTextContent('[1]'));
+            });
+
+            it.each(['root', 'saved-component'] as const)('still connects an existing relation in %s', async (scope) => {
+              const { user } = renderRelation(scope);
+              const combobox = await screen.findByRole('combobox', { name: /Category relations/ });
+              await user.click(combobox);
+              await user.click(await screen.findByRole('option', { name: /Existing category 1/ }));
+              await waitFor(() => expect(screen.getByTestId('connected-ids')).toHaveTextContent('[1]'));
+              expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+            });
+
+            it('can select an existing relation after cancelling creation with empty search text', async () => {
+              const { user } = renderRelation();
+              const combobox = await screen.findByRole('combobox', { name: /Category relations/ });
+              await user.click(combobox);
+              await user.click(await screen.findByText('Create a relation'));
+              await screen.findByRole('dialog');
+              expect(screen.getByTestId('connected-ids')).toHaveTextContent('[]');
+              await user.click(screen.getByRole('button', { name: 'Close modal' }));
+              await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+              await user.click(combobox);
+              await user.click(await screen.findByRole('option', { name: /Existing category 1/ }));
+              await waitFor(() => expect(screen.getByTestId('connected-ids')).toHaveTextContent('[1]'));
             });
           });
           TEST
-      - name: Reproduce using the unchanged implementation and installed design system
-        run: yarn workspace @strapi/content-manager test:front --runInBand --testPathPattern=FormInputs/Relations/tests/Relations.test.tsx --testNamePattern='relation creation regression' --json --outputFile=/tmp/relation-probe.json
-      - name: Print reproduction results and installed combobox metadata
-        if: always()
+          yarn prettier --write packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/tests/RelationCreation.test.tsx
+      - name: Prove new regressions on unmodified source
+        shell: bash
         run: |
-          if [ -f /tmp/relation-probe.json ]; then
-            node -e "const r=require('/tmp/relation-probe.json'); console.log(JSON.stringify({passed:r.numPassedTests,failed:r.numFailedTests,results:r.testResults.map(t=>({file:t.name,message:t.message,assertions:t.assertionResults.map(a=>({name:a.fullName,status:a.status,failures:a.failureMessages}))}))},null,2));"
-          fi
-          git status --short
+          set +e
+          yarn workspace @strapi/content-manager test:front --runInBand --testPathPattern=Relations/tests/RelationCreation.test.tsx --json --outputFile=/tmp/before.json > /tmp/before.log 2>&1
+          status=$?
+          set -e
+          test "$status" -eq 1
+          node <<'NODE'
+          const assert = require('node:assert/strict');
+          const r = require('/tmp/before.json');
+          const cases = r.testResults.flatMap(t => t.assertionResults);
+          console.log(JSON.stringify(cases.map(t => ({name:t.fullName,status:t.status,failures:t.failureMessages.map(m=>m.slice(0,700))})), null, 2));
+          assert.equal(cases.length, 10);
+          assert.ok(cases.some(t => t.status === 'failed' && t.failureMessages.some(m => m.includes("You've tried to add a relation"))));
+          assert.ok(cases.filter(t => t.fullName.includes('still connects')).every(t => t.status === 'passed'));
+          NODE
+      - name: Apply the focused production correction
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          p = Path('packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx')
+          s = p.read_text()
+          replacements = [
+            ("  const [textValue, setTextValue] = React.useState<string | undefined>('');", "  const [textValue, setTextValue] = React.useState<string | undefined>('');\n  const isCreatingRelation = React.useRef(false);"),
+            ("          onCreateOption={() => {\n            if (canCreate) {", "          onCreateOption={() => {\n            // Creating also emits onChange with the search text, not a relation ID.\n            isCreatingRelation.current = true;\n            if (canCreate) {"),
+            ("          onOpenChange={() => {\n            handleSearch(textValue ?? '');", "          onOpenChange={(open) => {\n            if (open) {\n              isCreatingRelation.current = false;\n            }\n            handleSearch(textValue ?? '');"),
+            ("          onChange={handleChange}\n          onTextValueChange=", "          value=\"\"\n          onChange={(relationId) => {\n            if (!isCreatingRelation.current) {\n              handleChange(relationId);\n            }\n          }}\n          onTextValueChange=")
+          ]
+          for old,new in replacements:
+            assert s.count(old) == 1, old
+            s = s.replace(old,new)
+          p.write_text(s)
+          PY
+          yarn prettier --write packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx
+      - name: Commit only the fix and regression tests
+        id: candidate
+        run: |
+          git config user.name dijedontahiri
+          git config user.email 99071957+dijedontahiri@users.noreply.github.com
+          git add packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/tests/RelationCreation.test.tsx
+          git diff --cached --check
+          git diff --cached --stat
+          git commit -m "fix(content-manager): separate relation creation from selection"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          git log -1 --format='%H %s'
+      - name: Focused regressions and all relation tests on the candidate commit
+        run: |
+          yarn workspace @strapi/content-manager test:front --runInBand --testPathPattern=FormInputs/Relations/tests --json --outputFile=/tmp/after.json > /tmp/after.log 2>&1 || { tail -180 /tmp/after.log; exit 1; }
+          node -e "const r=require('/tmp/after.json');console.log(JSON.stringify({passed:r.numPassedTests,failed:r.numFailedTests,suites:r.numPassedTestSuites},null,2));"
+          tail -8 /tmp/after.log
+      - name: Complete content-manager frontend suite
+        run: |
+          yarn workspace @strapi/content-manager test:front --runInBand > /tmp/front.log 2>&1 || { tail -160 /tmp/front.log; exit 1; }
+          tail -9 /tmp/front.log
+      - name: Build declarations for type-check dependencies
+        run: |
+          yarn build --parallel=2 > /tmp/full-build.log 2>&1 || { tail -120 /tmp/full-build.log; exit 1; }
+          tail -8 /tmp/full-build.log
+      - name: Content-manager type checks
+        run: |
+          yarn workspace @strapi/content-manager test:ts > /tmp/types.log 2>&1 || { tail -100 /tmp/types.log; exit 1; }
+          tail -5 /tmp/types.log
+      - name: Content-manager lint and changed-file formatting
+        run: |
+          yarn workspace @strapi/content-manager lint > /tmp/lint.log 2>&1 || { tail -100 /tmp/lint.log; exit 1; }
+          tail -5 /tmp/lint.log
+          yarn prettier --check packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/tests/RelationCreation.test.tsx
+          git diff --check
+          test -z "$(git status --porcelain --untracked-files=no)"
+      - name: Publish the exact tested commit to a clean contribution branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch=fix/27246-relation-creation-selection
+          existing=$(git ls-remote origin "refs/heads/$branch")
+          test -z "$existing" || { echo 'Contribution branch already exists; refusing to overwrite it.'; exit 1; }
+          git -c 'credential.helper=!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f' push origin "HEAD:refs/heads/$branch"
+          echo "Published $(git rev-parse HEAD) on $branch"
+
+  node-24-verification:
+    needs: validate-and-publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.validate-and-publish.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+      - name: Build and verify the exact published commit on Node 24
+        run: |
+          corepack enable
+          yarn install --immutable > /tmp/install.log 2>&1 || { tail -80 /tmp/install.log; exit 1; }
+          yarn build --parallel=2 > /tmp/build.log 2>&1 || { tail -100 /tmp/build.log; exit 1; }
+          yarn workspace @strapi/content-manager test:front --runInBand > /tmp/front.log 2>&1 || { tail -140 /tmp/front.log; exit 1; }
+          tail -9 /tmp/front.log
+          yarn workspace @strapi/content-manager test:ts > /tmp/types.log 2>&1 || { tail -100 /tmp/types.log; exit 1; }
+          yarn workspace @strapi/content-manager lint > /tmp/lint.log 2>&1 || { tail -100 /tmp/lint.log; exit 1; }
+          yarn prettier --check packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/tests/RelationCreation.test.tsx
+          test -z "$(git status --porcelain --untracked-files=no)"
+          git log -1 --format='%H %s'
