@@ -1,0 +1,64 @@
+name: Validate invite modal dismissal fix
+
+on:
+  push:
+    branches:
+      - validate/20966-invite-modal-dismiss
+
+permissions:
+  contents: read
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+
+jobs:
+  admin-front:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: cd49d52da663f1f3a09fd1fad300529b2ff5045a
+          fetch-depth: 5
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install pinned dependencies
+        run: |
+          corepack enable
+          yarn install --immutable
+      - name: Prove the regression against upstream
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          source=packages/core/admin/admin/src/pages/Settings/pages/Users/components/NewUserForm.tsx
+          trap 'git restore -- "$source"' EXIT
+          git show 5fcd743f4965ed3efef854b6c36b60bee8fae29b:"$source" > "$source"
+          set +e
+          yarn workspace @strapi/admin test:front --runInBand --testPathPattern=NewUserForm.test.tsx
+          status=$?
+          set -e
+          test "$status" -ne 0
+          git restore -- "$source"
+          trap - EXIT
+      - name: Run focused frontend regression test
+        run: yarn workspace @strapi/admin test:front --runInBand --testPathPattern=NewUserForm.test.tsx
+      - name: Type-check admin frontend
+        if: success() || failure()
+        run: yarn workspace @strapi/admin test:ts:front
+      - name: Lint admin package
+        if: success() || failure()
+        run: yarn workspace @strapi/admin lint
+      - name: Check changed-file formatting
+        if: success() || failure()
+        run: yarn prettier --check packages/core/admin/admin/src/pages/Settings/pages/Users/components/NewUserForm.tsx packages/core/admin/admin/src/pages/Settings/pages/Users/components/tests/NewUserForm.test.tsx
+      - name: Check whitespace
+        if: success() || failure()
+        run: git diff --check 5fcd743f4965ed3efef854b6c36b60bee8fae29b HEAD
