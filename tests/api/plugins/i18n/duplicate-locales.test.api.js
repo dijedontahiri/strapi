@@ -26,7 +26,9 @@ describe('duplicate locale deletion preserves content by code', () => {
   let originalEnglishLocaleId;
 
   const readContent = () =>
-    Promise.all(contentUIDs.map((uid) => strapi.db.query(uid).findMany({ orderBy: { id: 'asc' } })));
+    Promise.all(
+      contentUIDs.map((uid) => strapi.db.query(uid).findMany({ orderBy: { id: 'asc' } }))
+    );
 
   const clean = async () => {
     for (const uid of contentUIDs) {
@@ -83,22 +85,25 @@ describe('duplicate locale deletion preserves content by code', () => {
 
   // Direct query-engine inserts recreate the inconsistent configuration from #27656.
   // The public create-locale endpoint correctly rejects duplicate codes.
-  test.each([0, 1])('deleting duplicate row %i keeps every content row unchanged', async (index) => {
-    const locales = [await createLocale('fr'), await createLocale('fr')];
-    await seedContent();
-    const before = await readContent();
-    const frenchArticles = before[0].filter((entry) => entry.locale === 'fr');
-    expect(frenchArticles).toHaveLength(2);
-    expect(frenchArticles.filter((entry) => entry.publishedAt === null)).toHaveLength(1);
-    expect(before[1].filter((entry) => entry.locale === 'fr')).toHaveLength(1);
+  test.each([0, 1])(
+    'deleting duplicate row %i keeps every content row unchanged',
+    async (index) => {
+      const locales = [await createLocale('fr'), await createLocale('fr')];
+      await seedContent();
+      const before = await readContent();
+      const frenchArticles = before[0].filter((entry) => entry.locale === 'fr');
+      expect(frenchArticles).toHaveLength(2);
+      expect(frenchArticles.filter((entry) => entry.publishedAt === null)).toHaveLength(1);
+      expect(before[1].filter((entry) => entry.locale === 'fr')).toHaveLength(1);
 
-    const res = await rq({ url: `/i18n/locales/${locales[index].id}`, method: 'DELETE' });
+      const res = await rq({ url: `/i18n/locales/${locales[index].id}`, method: 'DELETE' });
 
-    expect(res.statusCode).toBe(200);
-    expect(res.body.id).toBe(locales[index].id);
-    expect(await localeService.find({ code: 'fr' })).toEqual([locales[1 - index]]);
-    expect(await readContent()).toEqual(before);
-  });
+      expect(res.statusCode).toBe(200);
+      expect(res.body.id).toBe(locales[index].id);
+      expect(await localeService.find({ code: 'fr' })).toEqual([locales[1 - index]]);
+      expect(await readContent()).toEqual(before);
+    }
+  );
 
   test('only deleting the final definition removes the content for that exact code', async () => {
     const locales = [await createLocale('fr'), await createLocale('fr'), await createLocale('fr')];

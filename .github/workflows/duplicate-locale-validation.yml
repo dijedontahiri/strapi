@@ -12,13 +12,14 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  FIX_SHA: f829971a793a92f3556c8da8462d672d35690710
+  FIX_SHA: cae7f3975c6154b1bbc30471ae878293b966ebc5
   BASE_SHA: 3cd7dba3495e094682cc7a8d0eb83bde77e9b0b4
   NX_DAEMON: 'false'
   STRAPI_TELEMETRY_DISABLED: 'true'
+  NODE_OPTIONS: --max-old-space-size=6144
 
 jobs:
-  server-unit:
+  unit-build-lint:
     if: github.repository == 'dijedontahiri/strapi'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -35,81 +36,49 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: ${{ matrix.node }}
-      - name: Install and build runtime test dependencies
+      - name: Build code and declarations including dependencies
         run: |
           corepack enable
           yarn install --immutable > /tmp/install.log 2>&1 || { tail -100 /tmp/install.log; exit 1; }
-          yarn nx run-many --targets=build --projects=@strapi/utils,@strapi/database --nx-ignore-cycles --parallel=2 > /tmp/build.log 2>&1 || { tail -100 /tmp/build.log; exit 1; }
-          tail -8 /tmp/build.log
-      - name: Prove the new unit tests reproduce the original defect
+          yarn nx run @strapi/i18n:build --nx-ignore-cycles --parallel=2 > /tmp/build.log 2>&1 || { tail -100 /tmp/build.log; exit 1; }
+          tail -10 /tmp/build.log
+      - name: Verify regression against original implementation
         if: matrix.node == 22
-        shell: bash
         run: |
           source=packages/plugins/i18n/server/src/services/locales.ts
           trap 'git restore -- "$source"' EXIT
           git show "$BASE_SHA:$source" > "$source"
           set +e
-          yarn workspace @strapi/i18n test:unit --runInBand --testPathPattern=duplicate-locale-deletion.test.ts --json --outputFile=/tmp/locale-unit-before.json > /tmp/unit-before.log 2>&1
+          yarn workspace @strapi/i18n test:unit --runInBand --testPathPattern=duplicate-locale-deletion.test.ts --json --outputFile=/tmp/before.json > /tmp/before.log 2>&1
           status=$?
           set -e
-          tail -120 /tmp/unit-before.log
           test "$status" -eq 1
           node <<'NODE'
           const assert = require('node:assert/strict');
-          const result = require('/tmp/locale-unit-before.json');
-          assert.equal(result.numTotalTests, 7);
-          assert.equal(result.numRuntimeErrorTestSuites, 0);
-          const cases = result.testResults.flatMap(suite => suite.assertionResults);
-          assert.equal(cases.find(test => test.title === 'preserves entries when another definition has the same code').status, 'failed');
-          assert.equal(cases.find(test => test.title === 'deletes localized entries when the removed row is the only definition').status, 'passed');
-          console.log(`Original implementation: ${result.numFailedTests} failing regressions, ${result.numPassedTests} passing controls`);
+          const r = require('/tmp/before.json');
+          assert.equal(r.numTotalTests, 7);
+          assert.equal(r.numRuntimeErrorTestSuites, 0);
+          assert.equal(r.numFailedTests, 4);
+          assert.equal(r.numPassedTests, 3);
+          console.log('Original implementation: 4 failing regressions and 3 passing controls');
           NODE
           git restore -- "$source"
           trap - EXIT
-      - name: Run the complete i18n server unit suite
-        if: success() || failure()
+      - name: Run complete server unit suite
         run: yarn workspace @strapi/i18n test:unit --runInBand --testPathPattern=server/src
-      - name: Lint server sources and the new API test
-        if: success() || failure()
-        run: yarn eslint packages/plugins/i18n/server/src tests/api/plugins/i18n/duplicate-locales.test.api.js
-      - name: Check submitted file formatting
-        if: success() || failure()
+      - name: Lint entire i18n package and check submitted formatting
         run: |
-          files=(packages/plugins/i18n/server/src/services/locales.ts packages/plugins/i18n/server/src/services/__tests__/duplicate-locale-deletion.test.ts tests/api/plugins/i18n/duplicate-locales.test.api.js)
-          yarn prettier --check "${files[@]}" || { yarn prettier --write "${files[@]}"; git diff -- "${files[@]}"; exit 1; }
+          yarn workspace @strapi/i18n lint
+          yarn prettier --check packages/plugins/i18n/server/src/services/locales.ts packages/plugins/i18n/server/src/services/__tests__/duplicate-locale-deletion.test.ts tests/api/plugins/i18n/duplicate-locales.test.api.js
           git diff --check "$BASE_SHA" HEAD
-
-  types-and-build:
-    if: github.repository == 'dijedontahiri/strapi'
-    runs-on: ubuntu-latest
-    timeout-minutes: 35
-    env:
-      NODE_OPTIONS: --max-old-space-size=6144
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ env.FIX_SHA }}
-          fetch-depth: 5
-          persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with:
-          node-version: 22
-      - name: Build i18n code and declarations with all dependencies
-        run: |
-          corepack enable
-          yarn install --immutable > /tmp/install.log 2>&1 || { tail -100 /tmp/install.log; exit 1; }
-          yarn nx run @strapi/i18n:build --nx-ignore-cycles --parallel=2 > /tmp/build.log 2>&1 || { tail -150 /tmp/build.log; exit 1; }
-          tail -10 /tmp/build.log
-      - name: Lint the complete i18n package
-        run: yarn workspace @strapi/i18n lint
-      - name: Type-check the changed service and new regression suite
+      - name: Type-check changed service and regression tests
         run: |
           config=packages/plugins/i18n/server/tsconfig.duplicate-locale-check.json
           trap 'rm -f "$config"' EXIT
           printf '%s\n' '{"extends":"./tsconfig.json","include":["./src/services/locales.ts","./src/services/__tests__/duplicate-locale-deletion.test.ts"]}' > "$config"
           yarn tsc --project "$config" --noEmit
-      - name: Compare the known full-server test typing errors with upstream
-        shell: bash
+      - name: Compare full-server test typing diagnostics with upstream
+        if: matrix.node == 22
         run: |
           source=packages/plugins/i18n/server/src/services/locales.ts
           regression=packages/plugins/i18n/server/src/services/__tests__/duplicate-locale-deletion.test.ts
@@ -127,14 +96,14 @@ jobs:
           cat /tmp/types-after.txt
           test "$fixed_status" -eq "$base_status"
           diff -u /tmp/types-before.txt /tmp/types-after.txt
-          echo 'Full-server test type-check diagnostics are identical to upstream; this is not a clean full-server type check.'
+          echo 'Full-server test typing still has upstream errors; no additional diagnostics introduced.'
           git restore -- "$source" "$regression"
           trap - EXIT
 
   database-api:
     if: github.repository == 'dijedontahiri/strapi'
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -170,50 +139,55 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 22
-      - name: Build runtime workspaces for the API harness
-        env:
-          NODE_OPTIONS: --max-old-space-size=6144
+      - name: Build runtime workspaces for API harness
         run: |
           corepack enable
           yarn install --immutable > /tmp/install.log 2>&1 || { tail -100 /tmp/install.log; exit 1; }
-          yarn build:code --parallel=2 > /tmp/build.log 2>&1 || { tail -150 /tmp/build.log; exit 1; }
+          yarn build:code --parallel=2 > /tmp/build.log 2>&1 || { tail -100 /tmp/build.log; exit 1; }
           tail -8 /tmp/build.log
       - name: Prepare PostgreSQL schema
         if: matrix.database == 'postgres'
         env:
           PGPASSWORD: strapi
         run: psql -h 127.0.0.1 -U strapi -d strapi_test -c 'CREATE SCHEMA IF NOT EXISTS myschema;'
-      - name: Prove content is lost on the original implementation
-        shell: bash
+      - name: Prove the original loses content after deletion
         run: |
           source=packages/plugins/i18n/server/src/services/locales.ts
           trap 'git restore -- "$source"' EXIT
           git show "$BASE_SHA:$source" > "$source"
           yarn workspace @strapi/i18n build:code > /tmp/rebuild.log 2>&1
           set +e
-          yarn test:api --db=${{ matrix.database }} tests/api/plugins/i18n/duplicate-locales.test.api.js --json --outputFile=/tmp/locale-api-before.json > /tmp/api-before.log 2>&1
+          yarn test:api --db=${{ matrix.database }} tests/api/plugins/i18n/duplicate-locales.test.api.js --json --outputFile=/tmp/before.json > /tmp/before.log 2>&1
           status=$?
           set -e
-          tail -170 /tmp/api-before.log
+          tail -35 /tmp/before.log
           test "$status" -eq 1
           node <<'NODE'
           const assert = require('node:assert/strict');
-          const result = require('/tmp/locale-api-before.json');
-          assert.equal(result.numTotalTests, 5);
-          assert.equal(result.numRuntimeErrorTestSuites, 0);
-          assert.equal(result.numFailedTests, 3);
-          assert.equal(result.numPassedTests, 2);
-          for (const test of result.testResults.flatMap(suite => suite.assertionResults)) {
-            if (test.status === 'failed') assert.match(test.failureMessages.join('\n'), /toEqual/);
+          const r = require('/tmp/before.json');
+          assert.equal(r.numTotalTests, 5);
+          assert.equal(r.numRuntimeErrorTestSuites, 0);
+          assert.equal(r.numFailedTests, 3);
+          assert.equal(r.numPassedTests, 2);
+          for (const t of r.testResults.flatMap(s => s.assertionResults)) {
+            if (t.status === 'failed') assert.match(t.failureMessages.join('\n'), /toEqual/);
           }
-          console.log('Original implementation: three content-equality failures after deletion and two passing controls');
+          console.log('Original implementation: 3 content-equality failures after deletion and 2 passing controls');
           NODE
           git restore -- "$source"
           trap - EXIT
-      - name: Run existing locale API tests and new regressions
+      - name: Verify existing locale API tests and all new regressions
         if: success() || failure()
         run: |
           git restore -- packages/plugins/i18n/server/src/services/locales.ts
           yarn workspace @strapi/i18n build:code > /tmp/rebuild.log 2>&1
-          yarn test:api --db=${{ matrix.database }} 'tests/api/plugins/i18n/(duplicate-locales|locales).test.api.js' --json --outputFile=/tmp/locale-api-after.json > /tmp/api-after.log 2>&1 || { tail -180 /tmp/api-after.log; exit 1; }
-          tail -20 /tmp/api-after.log
+          yarn test:api --db=${{ matrix.database }} 'tests/api/plugins/i18n/(duplicate-locales|locales).test.api.js' --json --outputFile=/tmp/after.json > /tmp/after.log 2>&1 || { tail -160 /tmp/after.log; exit 1; }
+          tail -20 /tmp/after.log
+          node <<'NODE'
+          const assert = require('node:assert/strict');
+          const r = require('/tmp/after.json');
+          assert.equal(r.numPassedTests, 21);
+          assert.equal(r.numFailedTests, 0);
+          assert.equal(r.numRuntimeErrorTestSuites, 0);
+          console.log('Final exact head: 21 API tests passed');
+          NODE
