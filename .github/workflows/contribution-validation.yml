@@ -63,7 +63,7 @@ jobs:
         run: yarn workspace @strapi/utils test:unit --runInBand
       - name: Build dependencies used by the CLI template tests
         if: success() || failure()
-        run: yarn nx run @strapi/utils:build --nx-ignore-cycles --parallel=2
+        run: yarn nx run-many --targets=build --projects=@strapi/utils,@strapi/database --nx-ignore-cycles --parallel=2
       - name: Complete create-strapi-app suite
         if: success() || failure()
         run: yarn workspace create-strapi-app test:unit --runInBand
