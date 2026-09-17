@@ -20,7 +20,7 @@ jobs:
   data-transfer:
     if: github.repository == 'dijedontahiri/strapi'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -38,6 +38,8 @@ jobs:
         run: |
           corepack enable
           yarn install --immutable
+      - name: Build data-transfer and workspace dependencies
+        run: yarn nx run @strapi/data-transfer:build --nx-ignore-cycles --parallel=2
       - name: Prove the symlink regression against upstream develop
         if: matrix.node == 22
         shell: bash
@@ -63,9 +65,20 @@ jobs:
       - name: Lint data-transfer
         if: success() || failure()
         run: yarn workspace @strapi/data-transfer lint
-      - name: Build data-transfer package
-        if: matrix.node == 22 && (success() || failure())
-        run: yarn nx run @strapi/data-transfer:build --nx-ignore-cycles --parallel=2
-      - name: Check changed-file formatting
+      - name: Check changed-file formatting and show formatter diff on failure
         if: success() || failure()
-        run: yarn prettier --check packages/core/data-transfer/src/strapi/providers/local-destination/index.ts packages/core/data-transfer/src/strapi/providers/local-destination/__tests__/assets-symlink.test.ts
+        shell: bash
+        run: |
+          files=(
+            packages/core/data-transfer/src/strapi/providers/local-destination/index.ts
+            packages/core/data-transfer/src/strapi/providers/local-destination/__tests__/assets-symlink.test.ts
+          )
+          set +e
+          yarn prettier --check "${files[@]}"
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            yarn prettier --write "${files[@]}"
+            git diff -- "${files[@]}"
+            exit "$status"
+          fi
