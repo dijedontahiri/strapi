@@ -1,0 +1,71 @@
+name: Validate uploads symlink preservation
+
+on:
+  push:
+    branches:
+      - validate/17779-symlink-20260917
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-17779-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+
+jobs:
+  data-transfer:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 0441708be526d0913979b80b11d2d6dff15314c7
+          fetch-depth: 3
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install pinned dependencies
+        run: |
+          corepack enable
+          yarn install --immutable
+      - name: Prove the symlink regression against upstream develop
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          source=packages/core/data-transfer/src/strapi/providers/local-destination/index.ts
+          trap 'git restore -- "$source"' EXIT
+          git show 5fcd743f4965ed3efef854b6c36b60bee8fae29b:"$source" > "$source"
+          set +e
+          yarn workspace @strapi/data-transfer test:unit --runInBand --testPathPattern=assets-symlink.test.ts --json --outputFile=/tmp/symlink-before.json
+          status=$?
+          set -e
+          test "$status" -eq 1
+          node -e "const r=require('/tmp/symlink-before.json'); if(r.numFailedTests!==1 || r.numPassedTests!==1 || r.numTotalTests!==2 || r.numTotalTestSuites!==1) throw Error('Expected exactly the symlink regression to fail against upstream'); console.log('Upstream regression confirmed: 1 failing symlink case, 1 passing regular-directory control');"
+          git restore -- "$source"
+          trap - EXIT
+      - name: Run focused symlink regression tests
+        run: yarn workspace @strapi/data-transfer test:unit --runInBand --testPathPattern=assets-symlink.test.ts
+      - name: Run complete data-transfer unit suite
+        run: yarn workspace @strapi/data-transfer test:unit --runInBand
+      - name: Type-check data-transfer
+        if: success() || failure()
+        run: yarn workspace @strapi/data-transfer test:ts
+      - name: Lint data-transfer
+        if: success() || failure()
+        run: yarn workspace @strapi/data-transfer lint
+      - name: Build data-transfer package
+        if: matrix.node == 22 && (success() || failure())
+        run: yarn nx run @strapi/data-transfer:build --nx-ignore-cycles --parallel=2
+      - name: Check changed-file formatting
+        if: success() || failure()
+        run: yarn prettier --check packages/core/data-transfer/src/strapi/providers/local-destination/index.ts packages/core/data-transfer/src/strapi/providers/local-destination/__tests__/assets-symlink.test.ts
