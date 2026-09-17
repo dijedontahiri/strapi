@@ -16,7 +16,7 @@ jobs:
   admin-front:
     if: github.repository == 'dijedontahiri/strapi'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -34,6 +34,10 @@ jobs:
         run: |
           corepack enable
           yarn install --immutable
+      - name: Build runtime workspaces required by admin tests
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: yarn build:code --parallel=2
       - name: Prove the regression against upstream
         if: matrix.node == 22
         shell: bash
@@ -42,10 +46,27 @@ jobs:
           trap 'git restore -- "$source"' EXIT
           git show 5fcd743f4965ed3efef854b6c36b60bee8fae29b:"$source" > "$source"
           set +e
-          yarn workspace @strapi/admin test:front --runInBand --testPathPattern=NewUserForm.test.tsx
+          yarn workspace @strapi/admin test:front --runInBand --testPathPattern=NewUserForm.test.tsx --json --outputFile=/tmp/new-user-form-before.json
           status=$?
           set -e
-          test "$status" -ne 0
+          test "$status" -eq 1
+          node - <<'NODE'
+          const result = require('/tmp/new-user-form-before.json');
+          if (
+            result.numFailedTests !== 1 ||
+            result.numPassedTests !== 0 ||
+            result.numTotalTests !== 1 ||
+            result.numTotalTestSuites !== 1
+          ) {
+            throw new Error(`Unexpected baseline result: ${JSON.stringify({
+              failed: result.numFailedTests,
+              passed: result.numPassedTests,
+              total: result.numTotalTests,
+              suites: result.numTotalTestSuites,
+            })}`);
+          }
+          console.log('Upstream regression confirmed: one focused test fails.');
+          NODE
           git restore -- "$source"
           trap - EXIT
       - name: Run focused frontend regression test
