@@ -1,0 +1,103 @@
+name: Exact PR quality verification
+
+on:
+  push:
+    branches:
+      - validate/exact-pr-quality-20260917
+
+permissions:
+  contents: read
+
+concurrency:
+  group: exact-pr-quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - pr: 27704
+            sha: b9cc6ccac4258ee4abaa8b0b4ed8eae08847e9d4
+            base: 3cd7dba3495e094682cc7a8d0eb83bde77e9b0b4
+            package: '@strapi/database'
+          - pr: 27702
+            sha: 3158efe1bfa146df65aa9c76f3d47c6f73848cd9
+            base: 3cd7dba3495e094682cc7a8d0eb83bde77e9b0b4
+            package: create-strapi-app
+          - pr: 27701
+            sha: 3e47c0403d2ad2ebdb88dee4f90457dd39986abd
+            base: 3cd7dba3495e094682cc7a8d0eb83bde77e9b0b4
+            package: '@strapi/utils'
+          - pr: 27700
+            sha: 5bea5deab6f37aa06a576af39c2ea7ed7523328b
+            base: 3cd7dba3495e094682cc7a8d0eb83bde77e9b0b4
+            package: '@strapi/utils'
+          - pr: 27699
+            sha: e598ed8890fb4daa06575b65ced744d4ac5b2897
+            base: 3cd7dba3495e094682cc7a8d0eb83bde77e9b0b4
+            package: '@strapi/typescript-utils'
+          - pr: 27698
+            sha: 317c99344bc01140905ab7644de791679c00461f
+            base: 3cd7dba3495e094682cc7a8d0eb83bde77e9b0b4
+            package: '@strapi/typescript-utils'
+          - pr: 26488
+            sha: d20c31a9d383ffffa5de4737aefe2d0fbca8d8e6
+            base: aa62644810e48c3b65e4b15e1055b97cd1c158fa
+            package: '@strapi/types'
+    name: PR ${{ matrix.pr }} / exact head / Node 22
+    env:
+      NX_DAEMON: 'false'
+      NODE_OPTIONS: --max-old-space-size=6144
+      HUSKY: '0'
+      STRAPI_TELEMETRY_DISABLED: 'true'
+      PACKAGE: ${{ matrix.package }}
+      PR_HEAD: ${{ matrix.sha }}
+      PR_BASE: ${{ matrix.base }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ matrix.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22
+      - name: Record exact tested source
+        run: |
+          test "$(git rev-parse HEAD)" = "$PR_HEAD"
+          git show --no-patch --format=fuller HEAD
+          node --version
+          git fetch --depth=1 origin "$PR_BASE"
+          git diff --check "$PR_BASE" HEAD
+      - name: Install pinned workspace dependencies
+        run: |
+          corepack enable
+          yarn install --immutable
+      - name: Build package and workspace dependencies
+        if: matrix.package != '@strapi/types'
+        run: yarn nx run "$PACKAGE:build" --nx-ignore-cycles --parallel=2
+      - name: Build type declarations and dependencies
+        if: matrix.package == '@strapi/types'
+        run: yarn nx run @strapi/types:build:types --nx-ignore-cycles --parallel=2
+      - name: Complete affected package unit suite
+        if: (success() || failure()) && matrix.package != '@strapi/types'
+        run: yarn workspace "$PACKAGE" test:unit --runInBand
+      - name: Package type checking
+        if: success() || failure()
+        run: yarn workspace "$PACKAGE" test:ts
+      - name: Package ESLint
+        if: success() || failure()
+        run: yarn workspace "$PACKAGE" lint
+      - name: Formatting of the full PR diff
+        if: success() || failure()
+        shell: bash
+        run: |
+          git diff --diff-filter=ACMR --name-only -z "$PR_BASE" HEAD -- '*.ts' '*.tsx' '*.js' '*.json' '*.md' | xargs -0 -r yarn prettier --check
+      - name: Assert checks did not modify tracked files
+        if: success() || failure()
+        run: git diff --exit-code
