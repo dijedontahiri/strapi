@@ -1,0 +1,188 @@
+name: Duplicate locale contribution validation
+
+on:
+  push:
+    branches:
+      - validate/duplicate-locales-20260917
+
+permissions:
+  contents: read
+
+concurrency:
+  group: duplicate-locales-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+
+jobs:
+  server-unit:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 62ed8b346350386c07f933a1d2a17e95f7c41d96
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install pinned dependencies
+        run: |
+          corepack enable
+          yarn install --immutable
+      - name: Build runtime test dependencies
+        run: yarn nx run-many --targets=build --projects=@strapi/utils,@strapi/database --nx-ignore-cycles --parallel=2
+      - name: Prove the new tests reproduce the original defect
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          source=packages/plugins/i18n/server/src/services/locales.ts
+          trap 'git restore -- "$source"' EXIT
+          git show 3cd7dba3495e094682cc7a8d0eb83bde77e9b0b4:"$source" > "$source"
+          set +e
+          yarn workspace @strapi/i18n test:unit --runInBand --testPathPattern=duplicate-locale-deletion.test.ts --json --outputFile=/tmp/locale-unit-before.json
+          status=$?
+          set -e
+          test "$status" -eq 1
+          node <<'NODE'
+          const assert = require('node:assert/strict');
+          const result = require('/tmp/locale-unit-before.json');
+          assert.equal(result.numTotalTests, 7);
+          assert.equal(result.numRuntimeErrorTestSuites, 0);
+          const cases = result.testResults.flatMap(suite => suite.assertionResults);
+          assert.equal(cases.find(test => test.title === 'preserves entries when another definition has the same code').status, 'failed');
+          assert.equal(cases.find(test => test.title === 'deletes localized entries when the removed row is the only definition').status, 'passed');
+          console.log(`Original implementation: ${result.numFailedTests} failing regressions, ${result.numPassedTests} passing controls`);
+          NODE
+          git restore -- "$source"
+          trap - EXIT
+      - name: Run the complete i18n server unit suite
+        if: success() || failure()
+        run: yarn workspace @strapi/i18n test:unit --runInBand --testPathPattern=server/src --json --outputFile=/tmp/locale-unit-after.json
+      - name: Lint the i18n package
+        if: success() || failure()
+        run: yarn workspace @strapi/i18n lint
+      - name: Check submitted file formatting
+        if: success() || failure()
+        run: yarn prettier --check packages/plugins/i18n/server/src/services/locales.ts packages/plugins/i18n/server/src/services/__tests__/duplicate-locale-deletion.test.ts tests/api/plugins/i18n/duplicate-locales.test.api.js
+
+  types-and-build:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 62ed8b346350386c07f933a1d2a17e95f7c41d96
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22
+      - name: Install pinned dependencies
+        run: |
+          corepack enable
+          yarn install --immutable
+      - name: Build i18n and its workspace dependencies
+        run: yarn nx run @strapi/i18n:build --nx-ignore-cycles --parallel=2
+      - name: Type-check server sources and regression tests
+        if: success() || failure()
+        run: yarn tsc --project packages/plugins/i18n/server/tsconfig.json --noEmit
+
+  database-api:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [sqlite, postgres, mysql]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: strapi
+          POSTGRES_PASSWORD: strapi
+          POSTGRES_DB: strapi_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U strapi -d strapi_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: strapi_test
+          MYSQL_USER: strapi
+          MYSQL_PASSWORD: strapi
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 62ed8b346350386c07f933a1d2a17e95f7c41d96
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22
+      - name: Install pinned dependencies
+        run: |
+          corepack enable
+          yarn install --immutable
+      - name: Build runtime workspaces for the API harness
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: yarn build:code --parallel=2
+      - name: Prepare PostgreSQL schema
+        if: matrix.database == 'postgres'
+        env:
+          PGPASSWORD: strapi
+        run: psql -h 127.0.0.1 -U strapi -d strapi_test -c 'CREATE SCHEMA IF NOT EXISTS myschema;'
+      - name: Prove content is lost on the original implementation
+        shell: bash
+        run: |
+          source=packages/plugins/i18n/server/src/services/locales.ts
+          trap 'git restore -- "$source"' EXIT
+          git show 3cd7dba3495e094682cc7a8d0eb83bde77e9b0b4:"$source" > "$source"
+          yarn workspace @strapi/i18n build:code
+          set +e
+          yarn test:api --db=${{ matrix.database }} tests/api/plugins/i18n/duplicate-locales.test.api.js --json --outputFile=/tmp/locale-api-before.json
+          status=$?
+          set -e
+          test "$status" -eq 1
+          node <<'NODE'
+          const assert = require('node:assert/strict');
+          const result = require('/tmp/locale-api-before.json');
+          assert.equal(result.numTotalTests, 5);
+          assert.equal(result.numRuntimeErrorTestSuites, 0);
+          assert.equal(result.numFailedTests, 3);
+          assert.equal(result.numPassedTests, 2);
+          console.log('Original implementation: three SQL-backed data-loss failures and two passing controls');
+          NODE
+          git restore -- "$source"
+          yarn workspace @strapi/i18n build:code
+          trap - EXIT
+      - name: Run existing locale API tests and new regressions
+        if: success() || failure()
+        run: |
+          git restore -- packages/plugins/i18n/server/src/services/locales.ts
+          yarn workspace @strapi/i18n build:code
+          yarn test:api --db=${{ matrix.database }} 'tests/api/plugins/i18n/(duplicate-locales|locales).test.api.js' --json --outputFile=/tmp/locale-api-after.json
