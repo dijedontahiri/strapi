@@ -23,11 +23,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 07885c33ed100c843d07a72e3a2d560362ce6bdb
+          ref: 4cdf39ff0e6e3b8f702033552ae60dcf31060c7d
           fetch-depth: 4
           persist-credentials: false
       - name: Verify exact fix head
-        run: test "$(git rev-parse HEAD)" = "07885c33ed100c843d07a72e3a2d560362ce6bdb"
+        run: test "$(git rev-parse HEAD)" = "4cdf39ff0e6e3b8f702033552ae60dcf31060c7d"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: ${{ matrix.node }}
