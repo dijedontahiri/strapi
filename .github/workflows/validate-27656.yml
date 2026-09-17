@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: 4cdf39ff0e6e3b8f702033552ae60dcf31060c7d
-          fetch-depth: 4
+          fetch-depth: 6
           persist-credentials: false
       - name: Verify exact fix head
         run: test "$(git rev-parse HEAD)" = "4cdf39ff0e6e3b8f702033552ae60dcf31060c7d"
