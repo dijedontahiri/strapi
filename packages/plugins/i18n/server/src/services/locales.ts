@@ -55,7 +55,17 @@ const deleteFn = async ({ id }: any) => {
   const localeToDelete = await findById(id);
 
   if (localeToDelete) {
-    await deleteAllLocalizedEntriesFor({ locale: localeToDelete.code });
+    // Content belongs to a locale code, not to an individual locale configuration row.
+    // Legacy databases can contain more than one row for the same code.
+    const otherLocale = await strapi.db.query('plugin::i18n.locale').findOne({
+      select: ['id'],
+      where: { code: localeToDelete.code, id: { $ne: localeToDelete.id } },
+    });
+
+    if (!otherLocale) {
+      await deleteAllLocalizedEntriesFor({ locale: localeToDelete.code });
+    }
+
     const result = await strapi.db.query('plugin::i18n.locale').delete({ where: { id } });
 
     getService('metrics').sendDidUpdateI18nLocalesEvent();
