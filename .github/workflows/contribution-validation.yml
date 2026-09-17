@@ -28,6 +28,17 @@ jobs:
         run: |
           corepack enable
           yarn install --immutable
+      - name: Prepare reproducible source and formatting artifacts
+        run: |
+          mkdir -p /tmp/strapi-contribution-artifacts
+          git archive --format=tar.gz --output=/tmp/strapi-contribution-artifacts/source.tar.gz HEAD
+          tar -czf /tmp/strapi-contribution-artifacts/compiler-formatter.tar.gz node_modules/typescript node_modules/prettier
+          yarn prettier packages/utils/typescript/src/__tests__/server-config.test.ts > /tmp/strapi-contribution-artifacts/server-config.formatted.ts
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: contribution-source
+          path: /tmp/strapi-contribution-artifacts/
+          retention-days: 3
       - name: Run the TypeScript utilities unit suite
         run: yarn workspace @strapi/typescript-utils test:unit --runInBand
       - name: Check TypeScript utilities types
@@ -36,4 +47,5 @@ jobs:
         run: |
           yarn prettier --check packages/utils/typescript/tsconfigs/server.json packages/utils/typescript/src/__tests__/server-config.test.ts
       - name: Lint TypeScript utilities
+        if: success() || failure()
         run: yarn workspace @strapi/typescript-utils lint
