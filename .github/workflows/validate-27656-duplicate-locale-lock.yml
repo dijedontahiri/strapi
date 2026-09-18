@@ -23,8 +23,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 56df124cd13dea2d8a56cf866455d417f690f2a1
-          fetch-depth: 6
+          ref: b2fcb5f1731813563c65e748e18ccca14c3c1731
+          fetch-depth: 7
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -49,7 +49,7 @@ jobs:
             echo "Expected duplicate-locale regression suite to fail against upstream"
             exit 1
           fi
-          git restore --source=56df124cd13dea2d8a56cf866455d417f690f2a1 -- "$source"
+          git restore --source=b2fcb5f1731813563c65e748e18ccca14c3c1731 -- "$source"
       - name: Run focused duplicate-locale regression suite
         run: yarn workspace @strapi/i18n test:unit --runInBand --testPathPattern=locales-duplicate-delete.test.ts
       - name: Run complete i18n unit suite
@@ -60,4 +60,4 @@ jobs:
         run: yarn prettier --check packages/plugins/i18n/server/src/services/locales.ts packages/plugins/i18n/server/src/services/__tests__/locales.test.ts packages/plugins/i18n/server/src/services/__tests__/locales-duplicate-delete.test.ts
       - name: Verify exact production source remains checked out
         run: |
-          git diff --exit-code 56df124cd13dea2d8a56cf866455d417f690f2a1 -- packages/plugins/i18n/server/src/services/locales.ts packages/plugins/i18n/server/src/services/__tests__/locales.test.ts packages/plugins/i18n/server/src/services/__tests__/locales-duplicate-delete.test.ts
+          git diff --exit-code b2fcb5f1731813563c65e748e18ccca14c3c1731 -- packages/plugins/i18n/server/src/services/locales.ts packages/plugins/i18n/server/src/services/__tests__/locales.test.ts packages/plugins/i18n/server/src/services/__tests__/locales-duplicate-delete.test.ts
