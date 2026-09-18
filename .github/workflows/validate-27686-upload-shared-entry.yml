@@ -1,0 +1,75 @@
+name: Validate upload shared entry
+
+on:
+  push:
+    branches:
+      - validate/27686-upload-shared-entry
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-upload-shared-entry-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 280bd0ba96e6eccc6d2a7a5d5c726ab2fce0216e
+          fetch-depth: 5
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install pinned dependencies
+        run: |
+          corepack enable
+          yarn install --immutable
+      - name: Prove focused regression fails without the missing barrels
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          rm packages/core/upload/shared/index.ts packages/core/upload/shared/contracts/index.ts
+          set +e
+          yarn workspace @strapi/upload test:unit --runInBand --testPathPattern=shared-entry.test.ts
+          status=$?
+          set -e
+          test "$status" -ne 0
+          git restore -- packages/core/upload/shared/index.ts packages/core/upload/shared/contracts/index.ts
+      - name: Build upload package and dependencies
+        run: yarn nx run @strapi/upload:build --nx-ignore-cycles --parallel=2
+      - name: Verify exported artifacts exist
+        run: |
+          test -f packages/core/upload/dist/shared/index.js
+          test -f packages/core/upload/dist/shared/index.mjs
+          test -f packages/core/upload/dist/shared/index.d.ts
+          test -f packages/core/upload/dist/shared/contracts/index.d.ts
+          yarn workspace @strapi/upload node -e "const shared = require('@strapi/upload/_internal/shared'); if (shared.AI_METADATA_CHUNK_SIZE !== 20) throw new Error('shared export did not resolve')"
+      - name: Run focused regression
+        run: yarn workspace @strapi/upload test:unit --runInBand --testPathPattern=shared-entry.test.ts
+      - name: Run complete upload unit suite
+        run: yarn workspace @strapi/upload test:unit --runInBand
+      - name: Type-check upload server
+        run: yarn workspace @strapi/upload test:ts:back
+      - name: Type-check upload admin
+        run: yarn workspace @strapi/upload test:ts:front
+      - name: Lint upload package
+        run: yarn workspace @strapi/upload lint
+      - name: Check changed-file formatting
+        run: yarn prettier --check packages/core/upload/shared/index.ts packages/core/upload/shared/contracts/index.ts packages/core/upload/server/src/__tests__/shared-entry.test.ts
+      - name: Verify production diff remains focused
+        run: |
+          git diff --check 5fcd743f4965ed3efef854b6c36b60bee8fae29b..HEAD
+          test "$(git diff --name-only 5fcd743f4965ed3efef854b6c36b60bee8fae29b..HEAD | wc -l)" -eq 3
