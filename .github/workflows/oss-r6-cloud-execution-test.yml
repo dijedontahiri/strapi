@@ -1,0 +1,189 @@
+name: OSS R6 cloud execution test
+on:
+  push:
+    branches: [validate/oss-r6-cloud-20260918]
+permissions:
+  contents: read
+concurrency:
+  group: oss-r6-cloud-test-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  repository-readiness:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - fork: dijedontahiri/strapi
+            upstream: strapi/strapi
+          - fork: dijedontahiri/payload
+            upstream: payloadcms/payload
+          - fork: dijedontahiri/gemini-cli
+            upstream: google-gemini/gemini-cli
+          - fork: dijedontahiri/qwen-code
+            upstream: QwenLM/qwen-code
+          - fork: dijedontahiri/query
+            upstream: TanStack/query
+          - fork: dijedontahiri/node
+            upstream: nodejs/node
+          - fork: dijedontahiri/framework
+            upstream: laravel/framework
+          - fork: dijedontahiri/vite
+            upstream: vitejs/vite
+    steps:
+      - name: Verify actual fork parent and resolve immutable source
+        id: identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORK: ${{ matrix.fork }}
+          UPSTREAM: ${{ matrix.upstream }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request, urllib.parse
+          def get(path):
+              req = urllib.request.Request('https://api.github.com/' + path,
+                  headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                           'Accept': 'application/vnd.github+json', 'User-Agent': 'oss-r6-readiness'})
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  return json.load(r)
+          fork, upstream = os.environ['FORK'], os.environ['UPSTREAM']
+          repo = get('repos/' + fork)
+          assert repo['full_name'].lower() == fork.lower()
+          assert repo['fork'] and repo['parent']['full_name'].lower() == upstream.lower()
+          branch = repo['default_branch']
+          commit = get('repos/' + fork + '/commits/' + urllib.parse.quote(branch, safe=''))
+          sha = commit['sha']
+          assert len(sha) == 40 and all(c in '0123456789abcdef' for c in sha)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write('sha=' + sha + '\n')
+          print(json.dumps({'fork': fork, 'upstream': upstream, 'branch': branch,
+                            'source_sha': sha, 'scope': 'readiness, not product test'}))
+          PY
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ matrix.fork }}
+          ref: ${{ steps.identity.outputs.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Verify checkout, policy files, manifests and registry networking
+        env:
+          EXPECTED_SHA: ${{ steps.identity.outputs.sha }}
+          FORK: ${{ matrix.fork }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess, urllib.request
+          root = pathlib.Path('.')
+          head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          assert head == os.environ['EXPECTED_SHA']
+          assert not subprocess.check_output(['git', 'status', '--porcelain'], text=True).strip()
+          policies = [str(p) for p in [root/'CONTRIBUTING.md', root/'.github/CONTRIBUTING.md'] if p.is_file()]
+          assert policies, 'No contribution policy entrypoint found'
+          manifest_path = root / ('composer.json' if os.environ['FORK'].endswith('/framework') else 'package.json')
+          manifest = json.loads(manifest_path.read_text())
+          url = ('https://repo.packagist.org/p2/laravel/framework.json'
+                 if manifest_path.name == 'composer.json' else 'https://registry.npmjs.org/typescript/latest')
+          with urllib.request.urlopen(url, timeout=30) as response:
+              assert response.status == 200
+              assert isinstance(json.load(response), dict)
+          record = {'fork': os.environ['FORK'], 'source_sha': head, 'policies': policies,
+                    'manifest_name': manifest.get('name'), 'package_manager': manifest.get('packageManager'),
+                    'registry_reachable': True, 'checkout_clean': True, 'product_tests_run': False}
+          print(json.dumps(record, indent=2))
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as f:
+              f.write('## ' + record['fork'] + '\n\nReadiness passed at `' + head + '`; product tests NOT run.\n')
+          PY
+  strapi-real-tests:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NX_DAEMON: 'false'
+      STRAPI_TELEMETRY_DISABLED: 'true'
+      EXPECTED_SOURCE: 3e47c0403d2ad2ebdb88dee4f90457dd39986abd
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: dijedontahiri/strapi
+          ref: 3e47c0403d2ad2ebdb88dee4f90457dd39986abd
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22
+      - name: Install immutable dependencies and build actual utilities package
+        id: setup
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          node --version
+          corepack enable
+          yarn --version
+          yarn install --immutable
+          yarn workspace @strapi/utils build
+      - name: Prove premature-close regression fails against original source
+        id: baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=packages/core/utils/src/file.ts
+          trap 'git restore -- "$source"' EXIT
+          git show 3cd7dba3495e094682cc7a8d0eb83bde77e9b0b4:"$source" > "$source"
+          set +e
+          yarn workspace @strapi/utils test:unit --runInBand --testPathPattern=get-stream-size.test.ts --testNamePattern='rejects a premature close' --json --outputFile="$RUNNER_TEMP/stream-size-before.json"
+          status=$?
+          set -e
+          test "$status" -eq 1
+          node - <<'JS'
+          const assert = require('node:assert/strict');
+          const r = require(process.env.RUNNER_TEMP + '/stream-size-before.json');
+          assert.equal(r.numFailedTests, 1);
+          assert.equal(r.numRuntimeErrorTestSuites, 0);
+          const failures = r.testResults.flatMap(s => s.assertionResults).filter(t => t.status === 'failed');
+          assert.equal(failures.length, 1);
+          assert.match(failures[0].fullName, /rejects a premature close/);
+          assert.match(failures[0].failureMessages.join('\n'), /resolved instead of rejected/i);
+          console.log('Expected baseline assertion failure verified; this is a negative control, not a passed product test.');
+          JS
+          git restore -- "$source"
+          trap - EXIT
+      - name: Eight stream-size regressions on exact submitted source
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: yarn workspace @strapi/utils test:unit --runInBand --testPathPattern=get-stream-size.test.ts --json --outputFile="$RUNNER_TEMP/stream-size-fixed.json"
+      - name: Complete utilities unit suite
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: yarn workspace @strapi/utils test:unit --runInBand --json --outputFile="$RUNNER_TEMP/utils-suite.json"
+      - name: Type check
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: yarn workspace @strapi/utils test:ts
+      - name: Package lint
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: yarn workspace @strapi/utils lint
+      - name: Changed-file formatting
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: yarn prettier --check packages/core/utils/src/file.ts packages/core/utils/src/__tests__/get-stream-size.test.ts
+      - name: Verify exact tested source and record scope
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          git diff --exit-code
+          git diff --cached --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          node - <<'JS'
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const focused = require(process.env.RUNNER_TEMP + '/stream-size-fixed.json');
+          const suite = require(process.env.RUNNER_TEMP + '/utils-suite.json');
+          assert.equal(focused.numPassedTests, 8);
+          assert.equal(focused.numFailedTests, 0);
+          assert.equal(focused.numPendingTests, 0);
+          assert.equal(suite.success, true);
+          console.log(JSON.stringify({source: process.env.EXPECTED_SOURCE,
+            focused_passed: focused.numPassedTests, suite_passed: suite.numPassedTests,
+            suite_skipped: suite.numPendingTests, suites: suite.numTotalTestSuites}));
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+            '## Exact-source Strapi checks\n\nSource `' + process.env.EXPECTED_SOURCE +
+            '`; 8 focused tests passed; full utilities suite: ' + suite.numPassedTests +
+            ' passed, ' + suite.numPendingTests + ' skipped.\n\nNot a complete monorepo/E2E or unattended task acceptance test.\n');
+          JS
