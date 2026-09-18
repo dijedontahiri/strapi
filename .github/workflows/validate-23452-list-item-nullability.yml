@@ -46,6 +46,8 @@ jobs:
       - name: Build runtime workspace code
         id: setup
         run: yarn build:code --parallel=2
+      - name: Build GraphQL package and declaration dependencies
+        run: yarn nx run @strapi/plugin-graphql:build --nx-ignore-cycles --parallel=2
       - name: Prove the regression fails against current develop
         if: matrix.node == 22
         shell: bash
