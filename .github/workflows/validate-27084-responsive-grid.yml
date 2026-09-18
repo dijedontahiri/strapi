@@ -1,0 +1,72 @@
+name: Validate responsive edit grid fix
+
+on:
+  push:
+    branches:
+      - validate/27084-responsive-grid-20260918
+
+permissions:
+  contents: read
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+
+jobs:
+  verify:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: fc6bff23f1cf96c643115cfecd49a672d001ab91
+          fetch-depth: 5
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install pinned dependencies
+        run: |
+          corepack enable
+          yarn install --immutable
+      - name: Build content-manager and frontend test dependencies
+        run: yarn nx run-many --targets=build --projects=@strapi/admin-test-utils,@strapi/content-manager --nx-ignore-cycles --parallel=2
+      - name: Prove the regression test fails against upstream develop
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          source_file=packages/core/content-manager/admin/src/pages/EditView/components/FormLayout.tsx
+          trap 'git restore -- "$source_file"' EXIT
+          git show ca0ad89d8fbfedd26698554878031f261980700b:"$source_file" > "$source_file"
+          set +e
+          yarn workspace @strapi/content-manager test:front --runInBand admin/src/pages/EditView/components/tests/FormLayout.test.tsx
+          status=$?
+          set -e
+          test "$status" -ne 0
+          git restore -- "$source_file"
+          trap - EXIT
+      - name: Run focused regression tests
+        run: yarn workspace @strapi/content-manager test:front --runInBand admin/src/pages/EditView/components/tests/FormLayout.test.tsx
+      - name: Run complete content-manager frontend suite
+        run: yarn workspace @strapi/content-manager test:front --runInBand
+      - name: Type-check content-manager frontend
+        run: yarn workspace @strapi/content-manager test:ts:front
+      - name: Lint content-manager
+        run: yarn workspace @strapi/content-manager lint
+      - name: Check changed-file formatting
+        run: yarn prettier --check packages/core/content-manager/admin/src/pages/EditView/components/FormLayout.tsx packages/core/content-manager/admin/src/pages/EditView/components/tests/FormLayout.test.tsx
+      - name: Build with NODE_ENV=test without baking in the fallback
+        if: matrix.node == 22
+        env:
+          NODE_ENV: test
+        run: |
+          yarn nx run @strapi/content-manager:build --nx-ignore-cycles --parallel=2
+          grep -R -q "jsdom" packages/core/content-manager/dist/admin
+      - name: Verify the exact submitted source remained unchanged
+        run: |
+          git diff --exit-code fc6bff23f1cf96c643115cfecd49a672d001ab91 -- packages/core/content-manager/admin/src/pages/EditView/components/FormLayout.tsx packages/core/content-manager/admin/src/pages/EditView/components/tests/FormLayout.test.tsx
