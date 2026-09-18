@@ -14,7 +14,7 @@ concurrency:
 env:
   NX_DAEMON: 'false'
   STRAPI_TELEMETRY_DISABLED: 'true'
-  EXPECTED_SOURCE: d51e5300607b2a5276677d2c22bc1f81d46bd376
+  EXPECTED_SOURCE: c7e07d4bdcd0c243d8865b544acc1aaa5482af5d
   BASE_SOURCE: d83af0410bf31b034b01757729f2231862ee5e87
 
 jobs:
@@ -29,7 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: d51e5300607b2a5276677d2c22bc1f81d46bd376
+          ref: c7e07d4bdcd0c243d8865b544acc1aaa5482af5d
           fetch-depth: 8
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
@@ -80,7 +80,7 @@ jobs:
       - name: Lint and format changed files
         run: |
           yarn workspace @strapi/plugin-graphql lint
-          yarn prettier --check packages/plugins/graphql/server/src/services/builders/type.ts tests/api/plugins/graphql/list-item-nullability.test.api.js
+          yarn prettier --check packages/plugins/graphql/server/src/services/builders/type.ts packages/plugins/graphql/server/src/__tests__/type-builder.test.ts tests/api/plugins/graphql/list-item-nullability.test.api.js
       - name: Verify exact tested source and focused diff
         run: |
           test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
@@ -89,5 +89,5 @@ jobs:
           test -z "$(git ls-files --others --exclude-standard)"
           git diff --check "$BASE_SOURCE" HEAD
           actual="$(git diff --name-only "$BASE_SOURCE" HEAD | sort)"
-          expected="$(printf '%s\n' packages/plugins/graphql/server/src/services/builders/type.ts tests/api/plugins/graphql/list-item-nullability.test.api.js | sort)"
+          expected="$(printf '%s\n' packages/plugins/graphql/server/src/services/builders/type.ts packages/plugins/graphql/server/src/__tests__/type-builder.test.ts tests/api/plugins/graphql/list-item-nullability.test.api.js | sort)"
           test "$actual" = "$expected"
