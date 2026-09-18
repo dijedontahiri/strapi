@@ -1,0 +1,178 @@
+name: Transaction pending finalizer validation
+
+on:
+  push:
+    branches:
+      - validate/27704-pending-finalizers-20260918
+
+permissions:
+  contents: read
+
+concurrency:
+  group: transaction-pending-finalizer-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+
+jobs:
+  database-unit:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 1b872228ec708b78802ef160bc7b4f408dfd5a83
+          fetch-depth: 5
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install pinned dependencies
+        run: |
+          corepack enable
+          yarn install --immutable
+      - name: Build database and dependencies
+        run: yarn nx run @strapi/database:build --nx-ignore-cycles --parallel=2
+      - name: Reproduce both review revisions before the fix
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          source=packages/core/database/src/transaction-context.ts
+          trap 'git restore -- "$source"' EXIT
+          check_baseline() {
+            revision="$1"
+            failed="$2"
+            passed="$3"
+            git show "$revision:$source" > "$source"
+            set +e
+            yarn workspace @strapi/database test:unit --runInBand --testPathPattern=transaction-context.test.ts --json --outputFile=/tmp/transaction-unit-before.json
+            status=$?
+            set -e
+            test "$status" -eq 1
+            node -e "const r=require('/tmp/transaction-unit-before.json'); if(r.numFailedTests!==$failed || r.numPassedTests!==$passed || r.numTotalTestSuites!==1) throw Error('Unexpected baseline result'); console.log('Baseline $revision: $failed assertion failures, $passed passing controls');"
+          }
+          check_baseline b9cc6ccac4258ee4abaa8b0b4ed8eae08847e9d4 10 19
+          check_baseline f13557b794a00ab6b0355475e15a85b81ce67b53 2 27
+          git restore -- "$source"
+          trap - EXIT
+      - name: Complete database unit suite on the exact candidate
+        if: success() || failure()
+        run: |
+          git restore -- packages/core/database/src/transaction-context.ts
+          git rev-parse HEAD
+          yarn workspace @strapi/database test:unit --runInBand --json --outputFile=/tmp/transaction-unit-after.json
+      - name: Database type check
+        if: success() || failure()
+        run: yarn workspace @strapi/database test:ts
+      - name: Database lint
+        if: success() || failure()
+        run: yarn workspace @strapi/database lint
+      - name: Changed-file formatting
+        if: success() || failure()
+        shell: bash
+        run: |
+          files=(packages/core/database/src/transaction-context.ts packages/core/database/src/__tests__/transaction-context.test.ts tests/api/core/database/transactions-ownership.test.api.js)
+          if ! yarn prettier --check "${files[@]}"; then
+            yarn prettier --write "${files[@]}"
+            git diff -- "${files[@]}"
+            exit 1
+          fi
+          git diff --exit-code
+
+  sql-integration:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [sqlite, postgres, mysql]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: strapi
+          POSTGRES_PASSWORD: strapi
+          POSTGRES_DB: strapi_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U strapi -d strapi_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: strapi_test
+          MYSQL_USER: strapi
+          MYSQL_PASSWORD: strapi
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 1b872228ec708b78802ef160bc7b4f408dfd5a83
+          fetch-depth: 5
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22
+      - name: Install pinned dependencies
+        run: |
+          corepack enable
+          yarn install --immutable
+      - name: Build real Strapi API runtime
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: yarn build:code --parallel=2
+      - name: Prepare PostgreSQL schema
+        if: matrix.database == 'postgres'
+        env:
+          PGPASSWORD: strapi
+        run: psql -h 127.0.0.1 -U strapi -d strapi_test -c 'CREATE SCHEMA IF NOT EXISTS myschema;'
+      - name: Prove SQL writes escape on the reviewed implementation
+        shell: bash
+        env:
+          TEST_DATABASE: ${{ matrix.database }}
+        run: |
+          source=packages/core/database/src/transaction-context.ts
+          trap 'git restore -- "$source"' EXIT
+          git show b9cc6ccac4258ee4abaa8b0b4ed8eae08847e9d4:"$source" > "$source"
+          yarn workspace @strapi/database build:code
+          pattern='rejects a detached query after'
+          failures=2
+          if [ "$TEST_DATABASE" != sqlite ]; then
+            pattern='a nested scope cannot commit independently|rejects a detached query after'
+            failures=3
+          fi
+          set +e
+          yarn test:api --db="$TEST_DATABASE" tests/api/core/database/transactions-ownership.test.api.js --testNamePattern="$pattern" --json --outputFile=/tmp/transaction-api-before.json
+          status=$?
+          set -e
+          test "$status" -eq 1
+          node -e "const r=require('/tmp/transaction-api-before.json'); if(r.numFailedTests!==$failures || r.numPassedTests!==0 || r.numTotalTestSuites!==1) throw Error('Expected row read-back assertion failures, not a setup error'); console.log('SQL baseline: $failures surviving-write regressions reproduced');"
+          git restore -- "$source"
+          yarn workspace @strapi/database build:code
+          trap - EXIT
+      - name: Existing transaction API tests and all ownership regressions
+        if: success() || failure()
+        run: |
+          git restore -- packages/core/database/src/transaction-context.ts
+          yarn workspace @strapi/database build:code
+          git rev-parse HEAD
+          yarn test:api --db=${{ matrix.database }} tests/api/core/database/transactions --json --outputFile=/tmp/transaction-api-after.json
+          git diff --exit-code
