@@ -1,0 +1,100 @@
+name: Validate invite modal dismissal current
+
+on:
+  push:
+    branches:
+      - validate/20966-current-20260919
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-20966-current-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+  EXPECTED_SOURCE: 84728ac0f6ac01792c4f693bf0ca3492af789f33
+  BASE_SOURCE: d83af0410bf31b034b01757729f2231862ee5e87
+
+jobs:
+  admin-front:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 84728ac0f6ac01792c4f693bf0ca3492af789f33
+          fetch-depth: 8
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install pinned dependencies
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          git cat-file -e "$BASE_SOURCE^{commit}"
+          corepack enable
+          yarn install --immutable
+      - name: Build admin and workspace dependencies
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: yarn nx run @strapi/admin:build --nx-ignore-cycles --parallel=2
+      - name: Prove the backdrop regression against current develop
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=packages/core/admin/admin/src/pages/Settings/pages/Users/components/NewUserForm.tsx
+          cp "$source" /tmp/fixed-new-user-form.tsx
+          trap 'cp /tmp/fixed-new-user-form.tsx "$source"' EXIT
+          git show "$BASE_SOURCE:$source" > "$source"
+          set +e
+          yarn workspace @strapi/admin test:front --runInBand --testPathPattern=NewUserForm.test.tsx --json --outputFile=/tmp/new-user-form-before.json
+          status=$?
+          set -e
+          test "$status" -eq 1
+          node - <<'NODE'
+          const result = require('/tmp/new-user-form-before.json');
+          if (
+            result.numFailedTests !== 1 ||
+            result.numPassedTests !== 0 ||
+            result.numTotalTests !== 1 ||
+            result.numTotalTestSuites !== 1
+          ) {
+            throw new Error(`Unexpected baseline result: ${JSON.stringify({
+              failed: result.numFailedTests,
+              passed: result.numPassedTests,
+              total: result.numTotalTests,
+              suites: result.numTotalTestSuites,
+            })}`);
+          }
+          NODE
+          cp /tmp/fixed-new-user-form.tsx "$source"
+          trap - EXIT
+      - name: Run focused frontend regression test
+        run: yarn workspace @strapi/admin test:front --runInBand --testPathPattern=NewUserForm.test.tsx
+      - name: Run complete admin frontend suite
+        run: yarn workspace @strapi/admin test:front --runInBand
+      - name: Type-check admin frontend
+        run: yarn workspace @strapi/admin test:ts:front
+      - name: Lint admin package
+        run: yarn workspace @strapi/admin lint
+      - name: Check changed-file formatting
+        run: yarn prettier --check packages/core/admin/admin/src/pages/Settings/pages/Users/components/NewUserForm.tsx packages/core/admin/admin/src/pages/Settings/pages/Users/components/tests/NewUserForm.test.tsx
+      - name: Verify exact source and focused diff
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          git diff --exit-code
+          git diff --cached --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          git diff --check "$BASE_SOURCE" HEAD
+          actual="$(git diff --name-only "$BASE_SOURCE" HEAD | sort)"
+          expected="$(printf '%s\n' packages/core/admin/admin/src/pages/Settings/pages/Users/components/NewUserForm.tsx packages/core/admin/admin/src/pages/Settings/pages/Users/components/tests/NewUserForm.test.tsx | sort)"
+          test "$actual" = "$expected"
