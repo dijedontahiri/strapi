@@ -1,4 +1,4 @@
-name: Validate uploads symlink preservation current
+name: Diagnose uploads symlink formatting
 
 on:
   push:
@@ -13,70 +13,29 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  NX_DAEMON: 'false'
-  STRAPI_TELEMETRY_DISABLED: 'true'
   EXPECTED_SOURCE: 6c7646f596e1ed1cf2ecc7e3000f3937a1724fbe
-  BASE_SOURCE: d83af0410bf31b034b01757729f2231862ee5e87
 
 jobs:
-  data-transfer:
+  prettier-diff:
     if: github.repository == 'dijedontahiri/strapi'
     runs-on: ubuntu-latest
-    timeout-minutes: 40
-    strategy:
-      fail-fast: false
-      matrix:
-        node: [22, 24, 26]
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: 6c7646f596e1ed1cf2ecc7e3000f3937a1724fbe
-          fetch-depth: 10
+          fetch-depth: 1
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: ${{ matrix.node }}
+          node-version: 22
       - name: Install pinned dependencies
         run: |
           test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
           corepack enable
           yarn install --immutable
-      - name: Build data-transfer and workspace dependencies
-        run: yarn nx run @strapi/data-transfer:build --nx-ignore-cycles --parallel=2
-      - name: Prove the symlink regression against current develop
-        if: matrix.node == 22
-        shell: bash
+      - name: Print exact Prettier rewrite
         run: |
-          set -euo pipefail
-          source=packages/core/data-transfer/src/strapi/providers/local-destination/index.ts
-          cp "$source" /tmp/fixed-index.ts
-          trap 'cp /tmp/fixed-index.ts "$source"' EXIT
-          git show "$BASE_SOURCE:$source" > "$source"
-          set +e
-          yarn workspace @strapi/data-transfer test:unit --runInBand --testPathPattern=assets-symlink.test.ts --json --outputFile=/tmp/symlink-before.json
-          status=$?
-          set -e
-          test "$status" -eq 1
-          node -e "const r=require('/tmp/symlink-before.json'); if(r.numFailedTests!==1 || r.numPassedTests!==1 || r.numTotalTests!==2 || r.numTotalTestSuites!==1) throw Error('Expected exactly the symlink regression to fail against develop');"
-          cp /tmp/fixed-index.ts "$source"
-          trap - EXIT
-      - name: Run focused symlink regression tests
-        run: yarn workspace @strapi/data-transfer test:unit --runInBand --testPathPattern=assets-symlink.test.ts
-      - name: Run complete data-transfer unit suite
-        run: yarn workspace @strapi/data-transfer test:unit --runInBand
-      - name: Type-check data-transfer
-        run: yarn workspace @strapi/data-transfer test:ts
-      - name: Lint data-transfer
-        run: yarn workspace @strapi/data-transfer lint
-      - name: Check changed-file formatting
-        run: yarn prettier --check packages/core/data-transfer/src/strapi/providers/local-destination/index.ts packages/core/data-transfer/src/strapi/providers/local-destination/__tests__/assets-symlink.test.ts
-      - name: Verify exact source and focused diff
-        run: |
-          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
-          git diff --exit-code
-          git diff --cached --exit-code
-          test -z "$(git ls-files --others --exclude-standard)"
-          git diff --check "$BASE_SOURCE" HEAD
-          actual="$(git diff --name-only "$BASE_SOURCE" HEAD | sort)"
-          expected="$(printf '%s\n' packages/core/data-transfer/src/strapi/providers/local-destination/index.ts packages/core/data-transfer/src/strapi/providers/local-destination/__tests__/assets-symlink.test.ts | sort)"
-          test "$actual" = "$expected"
+          file=packages/core/data-transfer/src/strapi/providers/local-destination/__tests__/assets-symlink.test.ts
+          yarn prettier --write "$file"
+          git diff -- "$file"
