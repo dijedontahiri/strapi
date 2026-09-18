@@ -13,22 +13,51 @@ env:
   STRAPI_TELEMETRY_DISABLED: 'true'
 
 jobs:
-  format-diagnostic:
+  verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 4cb27da70a815fbb04eb46c868834a9f6847d478
+          ref: a8f211d2b5cd016d1ac415806b875ea4dc8bce8f
+          fetch-depth: 6
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ matrix.node }}
       - name: Install pinned dependencies
         run: |
           corepack enable
           yarn install --immutable
-      - name: Show Prettier correction
+      - name: Prove the regression against upstream
+        if: matrix.node == 22
+        shell: bash
         run: |
-          yarn prettier --write packages/utils/typescript/tsconfigs/server.json packages/utils/typescript/src/__tests__/server-config.test.ts
-          git diff -- packages/utils/typescript/tsconfigs/server.json packages/utils/typescript/src/__tests__/server-config.test.ts
+          config=packages/utils/typescript/tsconfigs/server.json
+          git show 5fcd743f4965ed3efef854b6c36b60bee8fae29b:"$config" > "$config"
+          set +e
+          yarn workspace @strapi/typescript-utils test:unit --runInBand --testPathPattern=server-config.test.ts
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "Expected the strictness regression to fail against upstream"
+            exit 1
+          fi
+          git restore --source=a8f211d2b5cd016d1ac415806b875ea4dc8bce8f -- "$config"
+      - name: Run complete package unit suite
+        run: yarn workspace @strapi/typescript-utils test:unit --runInBand
+      - name: Type-check package
+        run: yarn workspace @strapi/typescript-utils test:ts
+      - name: Lint package
+        run: yarn workspace @strapi/typescript-utils lint
+      - name: Build package
+        run: yarn nx run @strapi/typescript-utils:build --nx-ignore-cycles
+      - name: Check changed-file formatting
+        run: yarn prettier --check packages/utils/typescript/tsconfigs/server.json packages/utils/typescript/src/__tests__/server-config.test.ts
+      - name: Verify exact production source remains checked out
+        run: |
+          git diff --exit-code a8f211d2b5cd016d1ac415806b875ea4dc8bce8f -- packages/utils/typescript/tsconfigs/server.json packages/utils/typescript/src/__tests__/server-config.test.ts
