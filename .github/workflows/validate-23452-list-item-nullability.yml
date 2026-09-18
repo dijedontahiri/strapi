@@ -1,0 +1,91 @@
+name: Validate GraphQL list item nullability fix
+
+on:
+  push:
+    branches: [validate/23452-list-item-nullability-20260918]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: strapi-23452-list-item-nullability-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+  EXPECTED_SOURCE: 6df57cf62c40036a9757e3594d6765b05e5096aa
+  BASE_SOURCE: d83af0410bf31b034b01757729f2231862ee5e87
+
+jobs:
+  verify:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 6df57cf62c40036a9757e3594d6765b05e5096aa
+          fetch-depth: 8
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Preflight and immutable dependencies
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          node --version
+          df -h .
+          corepack enable
+          yarn --version
+          yarn install --immutable
+      - name: Build runtime workspace code
+        id: setup
+        run: yarn build:code --parallel=2
+      - name: Prove the regression fails against current develop
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_file=packages/plugins/graphql/server/src/services/builders/type.ts
+          trap 'git restore -- "$source_file"; yarn nx run @strapi/plugin-graphql:build:code --nx-ignore-cycles --parallel=2 >/dev/null 2>&1 || true' EXIT
+          git show "$BASE_SOURCE:$source_file" > "$source_file"
+          yarn nx run @strapi/plugin-graphql:build:code --nx-ignore-cycles --parallel=2
+          set +e
+          yarn test:api --db=sqlite tests/api/plugins/graphql/list-item-nullability.test.api.js --runInBand 2>&1 | tee "$RUNNER_TEMP/baseline.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          test "$status" -eq 1
+          grep -q "generated list fields do not expose nullable entries" "$RUNNER_TEMP/baseline.log"
+          grep -q "Expected:.*NON_NULL\|Expected: \"NON_NULL\"" "$RUNNER_TEMP/baseline.log"
+          git restore -- "$source_file"
+          yarn nx run @strapi/plugin-graphql:build:code --nx-ignore-cycles --parallel=2
+          trap - EXIT
+      - name: Run list item nullability regression
+        run: yarn test:api --db=sqlite tests/api/plugins/graphql/list-item-nullability.test.api.js --runInBand
+      - name: Run existing GraphQL component and relation API coverage
+        run: yarn test:api --db=sqlite tests/api/plugins/graphql/components.test.api.js tests/api/plugins/graphql/relations.test.api.js --runInBand
+      - name: Run GraphQL package unit suite
+        run: yarn workspace @strapi/plugin-graphql test:unit --runInBand
+      - name: Type check GraphQL package
+        run: |
+          yarn workspace @strapi/plugin-graphql test:ts:back
+          yarn workspace @strapi/plugin-graphql test:ts:front
+      - name: Lint and format changed files
+        run: |
+          yarn workspace @strapi/plugin-graphql lint
+          yarn prettier --check packages/plugins/graphql/server/src/services/builders/type.ts tests/api/plugins/graphql/list-item-nullability.test.api.js
+      - name: Verify exact tested source and focused diff
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          git diff --exit-code
+          git diff --cached --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          git diff --check "$BASE_SOURCE" HEAD
+          actual="$(git diff --name-only "$BASE_SOURCE" HEAD | sort)"
+          expected="$(printf '%s\n' packages/plugins/graphql/server/src/services/builders/type.ts tests/api/plugins/graphql/list-item-nullability.test.api.js | sort)"
+          test "$actual" = "$expected"
