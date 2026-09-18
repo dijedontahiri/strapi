@@ -5,6 +5,7 @@ import { useIntl } from 'react-intl';
 import { styled } from 'styled-components';
 
 import { EditLayout } from '../../../hooks/useDocumentLayout';
+import { isJSDOM } from '../../../utils/isJSDOM';
 
 import { InputRenderer } from './InputRenderer';
 
@@ -16,12 +17,11 @@ export const ResponsiveGridRoot = styled(Grid.Root)`
 
 export const ResponsiveGridItem =
   /**
-   * TODO:
-   * JSDOM cannot handle container queries.
-   * This is a temporary workaround so that tests do not fail in the CI when jestdom throws an error
-   * for failing to parse the stylesheet.
+   * JSDOM cannot handle container queries, so omit the responsive rule only while the module is
+   * actually running in JSDOM. `NODE_ENV` is a build-time setting and can also be set to `test`
+   * for deployment builds, so it must not decide which CSS is bundled for real browsers.
    */
-  process.env.NODE_ENV !== 'test'
+  !isJSDOM()
     ? styled(Grid.Item)<{ col: number }>`
         grid-column: span 12;
         ${({ theme }) => theme.breakpoints.medium} {
