@@ -1,0 +1,81 @@
+name: Validate content type options preservation
+
+on:
+  push:
+    branches:
+      - validate/21753-content-type-options-20260918
+
+permissions:
+  contents: read
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 5
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Install pinned dependencies
+        run: |
+          corepack enable
+          yarn install --immutable
+
+      - name: Build Content Type Builder and dependencies
+        run: yarn nx run @strapi/content-type-builder:build --nx-ignore-cycles --parallel=2
+
+      - name: Prove regression against upstream develop
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          source=packages/core/content-type-builder/server/src/services/schema-builder/content-type-builder.ts
+          trap 'git restore -- "$source"' EXIT
+          git show a1e2b0d2d7ed90509c091e084885c6bd57112aa2:"$source" > "$source"
+          set +e
+          output=$(yarn workspace @strapi/content-type-builder test:unit:vitest server/src/services/schema-builder/__tests__/content-type-options.vitest.test.ts 2>&1)
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          test "$status" -ne 0
+          printf '%s\n' "$output" | grep -F "preserves schema options omitted by the Content-Type Builder payload"
+          printf '%s\n' "$output" | grep -F "allows submitted options and draftAndPublish to override existing values"
+          git restore -- "$source"
+          trap - EXIT
+
+      - name: Run Content Type Builder Vitest suite
+        run: yarn workspace @strapi/content-type-builder test:unit:vitest
+
+      - name: Type-check Content Type Builder server
+        run: yarn workspace @strapi/content-type-builder test:ts:back
+
+      - name: Lint Content Type Builder
+        run: yarn workspace @strapi/content-type-builder lint
+
+      - name: Check changed-file formatting
+        run: >-
+          yarn prettier --check
+          packages/core/content-type-builder/server/src/services/schema-builder/content-type-builder.ts
+          packages/core/content-type-builder/server/src/services/schema-builder/__tests__/content-type-options.vitest.test.ts
+
+      - name: Check whitespace and exact product diff
+        run: |
+          git diff --check a1e2b0d2d7ed90509c091e084885c6bd57112aa2 HEAD -- \
+            packages/core/content-type-builder/server/src/services/schema-builder/content-type-builder.ts \
+            packages/core/content-type-builder/server/src/services/schema-builder/__tests__/content-type-options.vitest.test.ts
+          git diff --name-only a1e2b0d2d7ed90509c091e084885c6bd57112aa2 HEAD -- \
+            packages/core/content-type-builder/server/src/services/schema-builder/content-type-builder.ts \
+            packages/core/content-type-builder/server/src/services/schema-builder/__tests__/content-type-options.vitest.test.ts
