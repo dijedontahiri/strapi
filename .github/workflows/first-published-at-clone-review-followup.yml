@@ -1,0 +1,108 @@
+name: First published at clone review follow-up
+
+on:
+  push:
+    branches:
+      - validate/24377-review-followup-20260918
+
+permissions:
+  contents: read
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+
+jobs:
+  core-package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 07b4ef8e7e29307ad33eb70f89771272a0067326
+          fetch-depth: 3
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Verify exact submitted source
+        run: test "$(git rev-parse HEAD)" = "07b4ef8e7e29307ad33eb70f89771272a0067326"
+      - name: Install pinned dependencies
+        run: |
+          corepack enable
+          yarn install --immutable
+      - name: Build core and dependencies
+        run: yarn nx run @strapi/core:build --nx-ignore-cycles --parallel=2
+      - name: Run complete core unit suite
+        env:
+          STRAPI_TELEMETRY_DISABLED: 'false'
+        run: yarn workspace @strapi/core test:unit --runInBand
+      - name: Type-check core
+        run: yarn workspace @strapi/core test:ts
+      - name: Lint core
+        run: yarn workspace @strapi/core lint
+      - name: Check changed-file formatting
+        run: yarn prettier --check packages/core/core/src/services/document-service/utils/clone-relations.ts tests/api/core/content-manager/api/first-published-at.test.api.js
+      - name: Check product diff whitespace
+        run: git diff --check ca0ad89d8fbfedd26698554878031f261980700b..HEAD
+
+  api-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [sqlite, postgres, mysql]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: strapi
+          POSTGRES_PASSWORD: strapi
+          POSTGRES_DB: strapi_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U strapi -d strapi_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: strapi_test
+          MYSQL_USER: strapi
+          MYSQL_PASSWORD: strapi
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 07b4ef8e7e29307ad33eb70f89771272a0067326
+          fetch-depth: 3
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22
+      - name: Install pinned dependencies
+        run: |
+          corepack enable
+          yarn install --immutable
+      - name: Build runtime packages
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: yarn build:code --parallel=2
+      - name: Run firstPublishedAt API regressions
+        run: yarn test:api --db=${{ matrix.database }} tests/api/core/content-manager/api/first-published-at.test.api.js --runInBand
+      - name: Verify tested product tree is clean
+        run: git diff --exit-code -- packages/core/core/src/services/document-service/utils/clone-relations.ts tests/api/core/content-manager/api/first-published-at.test.api.js
