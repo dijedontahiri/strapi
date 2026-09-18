@@ -38,6 +38,8 @@ jobs:
       - name: Preflight and immutable dependencies
         run: |
           test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          git fetch --no-tags --depth=1 https://github.com/strapi/strapi.git "$BASE_SOURCE"
+          git cat-file -e "$BASE_SOURCE^{commit}"
           node --version
           df -h .
           corepack enable
