@@ -15,7 +15,7 @@ concurrency:
 env:
   NX_DAEMON: 'false'
   STRAPI_TELEMETRY_DISABLED: 'true'
-  EXPECTED_SOURCE: 84728ac0f6ac01792c4f693bf0ca3492af789f33
+  EXPECTED_SOURCE: 5046c60f14f5768ca0cb5d650b18d18f0f53cd56
   BASE_SOURCE: d83af0410bf31b034b01757729f2231862ee5e87
 
 jobs:
@@ -30,7 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 84728ac0f6ac01792c4f693bf0ca3492af789f33
+          ref: 5046c60f14f5768ca0cb5d650b18d18f0f53cd56
           fetch-depth: 8
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
