@@ -38,6 +38,14 @@ const createDatabase = () => {
   return { database, transactions };
 };
 
+const createGate = () => {
+  let resolve!: () => void;
+  const promise = new Promise<void>((finish) => {
+    resolve = finish;
+  });
+  return { promise, resolve };
+};
+
 // These tests use Node assertions so the same cases can also run in an isolated source harness.
 describe('transaction context ownership', () => {
   it('shares commit hooks through nested scopes of the same transaction', async () => {
@@ -175,24 +183,25 @@ describe('transaction context ownership', () => {
   });
 
   (['commit', 'rollback'] as const).forEach((finalization) => {
-    it(`clears all shared scopes when an outer ${finalization} helper is called inside a nested scope`, async () => {
+    it(`rejects work in all shared scopes after a nested scope calls the outer ${finalization}`, async () => {
       const { database, transactions } = createDatabase();
-      const calls: string[] = [];
 
       await database.transaction(async (outer) => {
         await database.transaction(async () => {
           await outer[finalization]();
-          assert.equal(database.inTransaction(), false);
+          assert.throws(() => database.inTransaction(), /Transaction is closed/);
         });
-        assert.equal(database.inTransaction(), false);
-        await database.transaction(({ onCommit }) => {
-          onCommit(() => calls.push('new transaction'));
-        });
+        assert.throws(() => transactionCtx.get(), /Transaction is closed/);
+        await assert.rejects(database.transaction(() => {}), /Transaction is closed/);
+        await assert.rejects(database.transaction(), /Transaction is closed/);
       });
 
+      assert.equal(transactions.length, 1);
+      // Work started outside the completed scope is still independent.
+      await database.transaction(() => {});
       assert.equal(transactions.length, 2);
-      assert.deepEqual(calls, ['new transaction']);
     });
+
     it(`does not detach an unrelated active transaction when an independent handle uses ${finalization}`, async () => {
       const { database, transactions } = createDatabase();
       const handle = await database.transaction();
@@ -387,5 +396,220 @@ describe('transaction context ownership', () => {
 
     assert.equal(transactions.length, 2);
     assert.deepEqual(calls, ['original rollback', 'recovery commit']);
+  });
+
+  (['commit', 'rollback'] as const).forEach((operation) => {
+    it(`does not start a second transaction while ${operation} is in flight`, async () => {
+      const { database, transactions } = createDatabase();
+      const finalizerGate = createGate();
+      const detachedGate = createGate();
+      let detached!: Promise<unknown>;
+
+      await database.transaction(async (outer) => {
+        const finalize = outer.trx[operation].bind(outer.trx);
+        outer.trx[operation] = async () => {
+          await finalizerGate.promise;
+          return finalize();
+        };
+        await database.transaction(() => {
+          detached = detachedGate.promise.then(() => database.transaction(() => {}));
+        });
+
+        const finalizing = outer[operation]();
+        detachedGate.resolve();
+        try {
+          await assert.rejects(detached, /Transaction is finalizing/);
+          assert.equal(transactions.length, 1);
+          assert.throws(() => transactionCtx.get(), /Transaction is finalizing/);
+          assert.throws(() => outer.onCommit(() => {}), /Transaction is finalizing/);
+          assert.throws(() => outer.onRollback(() => {}), /Transaction is finalizing/);
+        } finally {
+          finalizerGate.resolve();
+          await finalizing;
+        }
+      });
+
+      assert.equal(transactions.length, 1);
+    });
+
+    it(`rejects detached work after ${operation} completes`, async () => {
+      const { database, transactions } = createDatabase();
+      const detachedGate = createGate();
+      let detached!: Promise<unknown>;
+
+      await database.transaction(async (outer) => {
+        await database.transaction(() => {
+          detached = detachedGate.promise.then(async () => {
+            assert.throws(() => transactionCtx.get(), /Transaction is closed/);
+            assert.throws(() => outer.onCommit(() => {}), /Transaction is closed/);
+            assert.throws(() => outer.onRollback(() => {}), /Transaction is closed/);
+            await assert.rejects(
+              transactionCtx.run(outer.trx, () => {}),
+              /Transaction is closed/
+            );
+            await database.transaction(() => {});
+          });
+        });
+        await outer[operation]();
+      });
+
+      detachedGate.resolve();
+      await assert.rejects(detached, /Transaction is closed/);
+      assert.equal(transactions.length, 1);
+    });
+
+    it(`runs async ${operation} hooks outside the closed context without freeing old descendants`, async () => {
+      const { database, transactions } = createDatabase();
+      const gate = createGate();
+      const calls: string[] = [];
+      let followUp!: Promise<unknown>;
+      let detached!: Promise<unknown>;
+
+      await database.transaction(async (outer) => {
+        const register = operation === 'commit' ? outer.onCommit : outer.onRollback;
+        register(() => {
+          assert.equal(transactionCtx.get(), undefined);
+          followUp = gate.promise.then(() =>
+            database.transaction(({ onCommit }) => {
+              onCommit(() => calls.push('follow-up'));
+            })
+          );
+        });
+        await database.transaction(() => {
+          detached = gate.promise.then(() => database.transaction(() => {}));
+        });
+        await outer[operation]();
+      });
+
+      gate.resolve();
+      await assert.rejects(detached, /Transaction is closed/);
+      await followUp;
+      assert.equal(transactions.length, 2);
+      assert.deepEqual(calls, ['follow-up']);
+    });
+
+    it(`coalesces repeated ${operation} helpers while the driver finalizer is pending`, async () => {
+      const { database, transactions } = createDatabase();
+      const gate = createGate();
+      const calls: string[] = [];
+      let finalizations = 0;
+
+      await database.transaction(async (outer) => {
+        const finalize = outer.trx[operation].bind(outer.trx);
+        outer.trx[operation] = async () => {
+          finalizations += 1;
+          // Some drivers report completion before the finalizer promise resolves.
+          const result = finalize();
+          await gate.promise;
+          return result;
+        };
+        const register = operation === 'commit' ? outer.onCommit : outer.onRollback;
+        register(() => calls.push(operation));
+        const first = outer[operation]();
+        const second = outer[operation]();
+        try {
+          assert.equal(finalizations, 1);
+          assert.deepEqual(calls, []);
+          const competing = operation === 'commit' ? outer.rollback : outer.commit;
+          await assert.rejects(competing(), /Transaction is finalizing/);
+        } finally {
+          gate.resolve();
+          await Promise.all([first, second]);
+        }
+      });
+
+      assert.equal(transactions.length, 1);
+      assert.deepEqual(calls, [operation]);
+    });
+
+    it(`clears both hook lists before a ${operation} hook throws`, async () => {
+      const { database, transactions } = createDatabase();
+      const calls: string[] = [];
+      const failure = new Error('completion hook failed');
+      let followUp!: Promise<unknown>;
+
+      await assert.rejects(
+        database.transaction(async (outer) => {
+          const register = operation === 'commit' ? outer.onCommit : outer.onRollback;
+          register(() => {
+            calls.push('original');
+            assert.equal(transactionCtx.get(), undefined);
+            followUp = database.transaction(({ onCommit }) => {
+              onCommit(() => calls.push('follow-up'));
+            });
+            throw failure;
+          });
+          await outer[operation]();
+        }),
+        (error) => error === failure
+      );
+      await followUp;
+      assert.equal(transactions.length, 2);
+      assert.deepEqual(calls, ['original', 'follow-up']);
+    });
+  });
+
+  it('rejects nested work during a failed commit and preserves rollback recovery hooks', async () => {
+    const { database, transactions } = createDatabase();
+    const detachedGate = createGate();
+    const commitGate = createGate();
+    const failure = new Error('commit failed before completion');
+    const calls: string[] = [];
+    let detached!: Promise<unknown>;
+    let recovery!: Promise<unknown>;
+
+    await assert.rejects(
+      database.transaction(async (outer) => {
+        outer.trx.commit = async () => {
+          await commitGate.promise;
+          throw failure;
+        };
+        outer.onCommit(() => calls.push('unexpected commit'));
+        outer.onRollback(() => {
+          calls.push('rollback');
+          recovery = database.transaction(({ onCommit }) => {
+            onCommit(() => calls.push('recovery'));
+          });
+        });
+        await database.transaction(() => {
+          detached = detachedGate.promise.then(() => database.transaction(() => {}));
+        });
+        const finalizing = outer.commit();
+        detachedGate.resolve();
+        try {
+          await assert.rejects(detached, /Transaction is finalizing/);
+          assert.equal(transactions.length, 1);
+        } finally {
+          commitGate.resolve();
+          await finalizing;
+        }
+      }),
+      (error) => error === failure
+    );
+    await recovery;
+    assert.equal(transactions.length, 2);
+    assert.deepEqual(calls, ['rollback', 'recovery']);
+  });
+
+  it('keeps the context closed when rollback itself fails', async () => {
+    const { database } = createDatabase();
+    const gate = createGate();
+    const failure = new Error('rollback failed');
+    let detached!: Promise<unknown>;
+    const calls: string[] = [];
+
+    await assert.rejects(
+      database.transaction(async (outer) => {
+        outer.trx.rollback = () => Promise.reject(failure);
+        outer.onCommit(() => calls.push('unexpected commit'));
+        outer.onRollback(() => calls.push('unexpected rollback'));
+        detached = gate.promise.then(() => database.transaction(() => {}));
+        throw new Error('original failure');
+      }),
+      (error) => error === failure
+    );
+    gate.resolve();
+    await assert.rejects(detached, /Transaction is closed/);
+    assert.deepEqual(calls, []);
   });
 });
