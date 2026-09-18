@@ -1,0 +1,89 @@
+name: Validate component layout cache-gap fix
+
+on:
+  push:
+    branches: [validate/27723-component-layout-cache-gap-20260919]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: strapi-27723-component-layout-cache-gap-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+  EXPECTED_SOURCE: f7efdb006f3d9af7ac049e08230348c0669c090f
+  BASE_SOURCE: d83af0410bf31b034b01757729f2231862ee5e87
+
+jobs:
+  verify:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: f7efdb006f3d9af7ac049e08230348c0669c090f
+          fetch-depth: 8
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Preflight and immutable dependencies
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          node --version
+          df -h .
+          corepack enable
+          yarn --version
+          yarn install --immutable
+      - name: Build frontend test dependencies
+        run: yarn nx run-many --targets=build --projects=@strapi/admin-test-utils,@strapi/content-manager --nx-ignore-cycles --parallel=2
+      - name: Prove the old unsafe lookup fails the regression
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_file=packages/core/content-manager/admin/src/pages/EditView/components/InputRenderer.tsx
+          cp "$source_file" "$RUNNER_TEMP/InputRenderer.tsx"
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('packages/core/content-manager/admin/src/pages/EditView/components/InputRenderer.tsx')
+          text = path.read_text()
+          old = "components[componentUid]?.layout ?? []"
+          assert old in text
+          path.write_text(text.replace(old, "components[componentUid].layout"))
+          PY
+          set +e
+          yarn workspace @strapi/content-manager test:front --runInBand admin/src/pages/EditView/components/tests/InputRenderer.test.tsx 2>&1 | tee "$RUNNER_TEMP/baseline.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          test "$status" -ne 0
+          grep -q "shared.missing\|Cannot read properties of undefined" "$RUNNER_TEMP/baseline.log"
+          mv "$RUNNER_TEMP/InputRenderer.tsx" "$source_file"
+      - name: Run focused regression
+        run: yarn workspace @strapi/content-manager test:front --runInBand admin/src/pages/EditView/components/tests/InputRenderer.test.tsx
+      - name: Run complete content-manager frontend suite
+        run: yarn workspace @strapi/content-manager test:front --runInBand
+      - name: Type check content-manager frontend
+        run: yarn workspace @strapi/content-manager test:ts:front
+      - name: Lint and format changed files
+        run: |
+          yarn workspace @strapi/content-manager lint
+          yarn prettier --check packages/core/content-manager/admin/src/pages/EditView/components/InputRenderer.tsx packages/core/content-manager/admin/src/pages/EditView/components/tests/InputRenderer.test.tsx
+      - name: Verify exact tested source and focused diff
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          git diff --exit-code
+          git diff --cached --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          git diff --check "$BASE_SOURCE" HEAD
+          actual="$(git diff --name-only "$BASE_SOURCE" HEAD | sort)"
+          expected="$(printf '%s\n' packages/core/content-manager/admin/src/pages/EditView/components/InputRenderer.tsx packages/core/content-manager/admin/src/pages/EditView/components/tests/InputRenderer.test.tsx | sort)"
+          test "$actual" = "$expected"
