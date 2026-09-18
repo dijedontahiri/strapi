@@ -27,8 +27,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 280bd0ba96e6eccc6d2a7a5d5c726ab2fce0216e
-          fetch-depth: 5
+          ref: 1b62385e2fb798280f9670536a3785a1e2c45d8e
+          fetch-depth: 6
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
@@ -68,8 +68,8 @@ jobs:
       - name: Lint upload package
         run: yarn workspace @strapi/upload lint
       - name: Check changed-file formatting
-        run: yarn prettier --check packages/core/upload/shared/index.ts packages/core/upload/shared/contracts/index.ts packages/core/upload/server/src/__tests__/shared-entry.test.ts
+        run: yarn prettier --check packages/core/upload/rollup.config.mjs packages/core/upload/shared/index.ts packages/core/upload/shared/contracts/index.ts packages/core/upload/server/src/__tests__/shared-entry.test.ts
       - name: Verify production diff remains focused
         run: |
           git diff --check 5fcd743f4965ed3efef854b6c36b60bee8fae29b..HEAD
-          test "$(git diff --name-only 5fcd743f4965ed3efef854b6c36b60bee8fae29b..HEAD | wc -l)" -eq 3
+          test "$(git diff --name-only 5fcd743f4965ed3efef854b6c36b60bee8fae29b..HEAD | wc -l)" -eq 4
