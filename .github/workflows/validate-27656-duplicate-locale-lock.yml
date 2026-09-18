@@ -1,0 +1,63 @@
+name: Validate 27656 duplicate locale locking
+
+on:
+  push:
+    branches:
+      - validate/27656-duplicate-locale-lock
+
+permissions:
+  contents: read
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 56df124cd13dea2d8a56cf866455d417f690f2a1
+          fetch-depth: 6
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install pinned dependencies
+        run: |
+          corepack enable
+          yarn install --immutable
+      - name: Build i18n package and workspace dependencies
+        run: yarn nx run @strapi/i18n:build --nx-ignore-cycles --parallel=2
+      - name: Prove regression against upstream implementation
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          source=packages/plugins/i18n/server/src/services/locales.ts
+          git show 5fcd743f4965ed3efef854b6c36b60bee8fae29b:"$source" > "$source"
+          set +e
+          yarn workspace @strapi/i18n test:unit --runInBand --testPathPattern=locales-duplicate-delete.test.ts
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "Expected duplicate-locale regression suite to fail against upstream"
+            exit 1
+          fi
+          git restore --source=56df124cd13dea2d8a56cf866455d417f690f2a1 -- "$source"
+      - name: Run focused duplicate-locale regression suite
+        run: yarn workspace @strapi/i18n test:unit --runInBand --testPathPattern=locales-duplicate-delete.test.ts
+      - name: Run complete i18n unit suite
+        run: yarn workspace @strapi/i18n test:unit --runInBand
+      - name: Lint package
+        run: yarn workspace @strapi/i18n lint
+      - name: Check changed-file formatting
+        run: yarn prettier --check packages/plugins/i18n/server/src/services/locales.ts packages/plugins/i18n/server/src/services/__tests__/locales.test.ts packages/plugins/i18n/server/src/services/__tests__/locales-duplicate-delete.test.ts
+      - name: Verify exact production source remains checked out
+        run: |
+          git diff --exit-code 56df124cd13dea2d8a56cf866455d417f690f2a1 -- packages/plugins/i18n/server/src/services/locales.ts packages/plugins/i18n/server/src/services/__tests__/locales.test.ts packages/plugins/i18n/server/src/services/__tests__/locales-duplicate-delete.test.ts
