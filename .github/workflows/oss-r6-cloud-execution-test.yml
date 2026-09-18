@@ -74,22 +74,38 @@ jobs:
           FORK: ${{ matrix.fork }}
         run: |
           python3 - <<'PY'
-          import hashlib, json, os, pathlib, subprocess, urllib.request
+          import json, os, pathlib, re, subprocess, urllib.request
           root = pathlib.Path('.')
           head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
           assert head == os.environ['EXPECTED_SHA']
           assert not subprocess.check_output(['git', 'status', '--porcelain'], text=True).strip()
           policies = [str(p) for p in [root/'CONTRIBUTING.md', root/'.github/CONTRIBUTING.md'] if p.is_file()]
           assert policies, 'No contribution policy entrypoint found'
-          manifest_path = root / ('composer.json' if os.environ['FORK'].endswith('/framework') else 'package.json')
-          manifest = json.loads(manifest_path.read_text())
-          url = ('https://repo.packagist.org/p2/laravel/framework.json'
-                 if manifest_path.name == 'composer.json' else 'https://registry.npmjs.org/typescript/latest')
+          if os.environ['FORK'] == 'dijedontahiri/node':
+              build_files = ['configure', 'node.gyp', 'BUILDING.md', 'src/node_version.h']
+              assert all((root / name).is_file() for name in build_files), 'Incomplete Node native build layout'
+              version_header = (root / 'src/node_version.h').read_text()
+              version_parts = [re.search(r'^#define NODE_' + part + r'_VERSION\s+(\d+)$', version_header, re.M)
+                               for part in ['MAJOR', 'MINOR', 'PATCH']]
+              assert all(version_parts), 'Missing Node source version macros'
+              toolchains = {tool: subprocess.check_output([tool, '--version'], text=True, timeout=10).splitlines()[0]
+                            for tool in ['python3', 'make', 'c++']}
+              layout = {'kind': 'native-node', 'build_files': build_files,
+                        'source_version': '.'.join(match.group(1) for match in version_parts),
+                        'available_toolchains': toolchains, 'native_build_run': False}
+              url = 'https://registry.npmjs.org/typescript/latest'
+          else:
+              manifest_path = root / ('composer.json' if os.environ['FORK'].endswith('/framework') else 'package.json')
+              manifest = json.loads(manifest_path.read_text())
+              layout = {'kind': manifest_path.name, 'manifest_name': manifest.get('name'),
+                        'package_manager': manifest.get('packageManager')}
+              url = ('https://repo.packagist.org/p2/laravel/framework.json'
+                     if manifest_path.name == 'composer.json' else 'https://registry.npmjs.org/typescript/latest')
           with urllib.request.urlopen(url, timeout=30) as response:
               assert response.status == 200
               assert isinstance(json.load(response), dict)
           record = {'fork': os.environ['FORK'], 'source_sha': head, 'policies': policies,
-                    'manifest_name': manifest.get('name'), 'package_manager': manifest.get('packageManager'),
+                    'build_layout': layout,
                     'registry_reachable': True, 'checkout_clean': True, 'product_tests_run': False}
           print(json.dumps(record, indent=2))
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as f:
