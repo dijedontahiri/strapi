@@ -1,0 +1,156 @@
+name: Validate grid component review coverage
+
+on:
+  push:
+    branches: [validate/27716-component-coverage-20260918]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: strapi-27716-component-coverage-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+  EXPECTED_SOURCE: f2ee03402b96f7203191ad724ae720746375db11
+
+jobs:
+  verify:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: f2ee03402b96f7203191ad724ae720746375db11
+          fetch-depth: 8
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Preflight and immutable dependencies
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          node --version
+          df -h .
+          corepack enable
+          yarn --version
+          yarn install --immutable
+      - name: Build content-manager and frontend test dependencies
+        id: setup
+        run: yarn nx run-many --targets=build --projects=@strapi/admin-test-utils,@strapi/content-manager --nx-ignore-cycles --parallel=2
+      - name: Actual component CSS regressions on candidate
+        run: |
+          yarn workspace @strapi/content-manager test:front --runInBand admin/src/pages/EditView/components/tests/FormLayout.test.tsx --json --outputFile="$RUNNER_TEMP/grid-fixed.json"
+          node - <<'JS'
+          const assert = require('node:assert/strict');
+          const r = require(process.env.RUNNER_TEMP + '/grid-fixed.json');
+          assert.equal(r.numPassedTests, 4);
+          assert.equal(r.numFailedTests, 0);
+          assert.equal(r.numPendingTests, 0);
+          assert.equal(r.numRuntimeErrorTestSuites, 0);
+          JS
+      - name: Prove original implementation and bypassed helper are detected
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_file=packages/core/content-manager/admin/src/pages/EditView/components/FormLayout.tsx
+          test_file=packages/core/content-manager/admin/src/pages/EditView/components/tests/FormLayout.test.tsx
+          trap 'git restore -- "$source_file" "$test_file"' EXIT
+          check_broken() {
+            label="$1"
+            set +e
+            yarn workspace @strapi/content-manager test:front --runInBand admin/src/pages/EditView/components/tests/FormLayout.test.tsx --json --outputFile="$RUNNER_TEMP/grid-$label.json"
+            status=$?
+            set -e
+            test "$status" -eq 1
+            RESULT="$RUNNER_TEMP/grid-$label.json" node - <<'JS'
+          const assert = require('node:assert/strict');
+          const r = require(process.env.RESULT);
+          assert.equal(r.numTotalTests, 4);
+          assert.equal(r.numFailedTests, 3);
+          assert.equal(r.numPassedTests, 1);
+          assert.equal(r.numRuntimeErrorTestSuites, 0);
+          const cases = r.testResults.flatMap(s => s.assertionResults);
+          assert.ok(cases.find(t => /only the full-width wrapper in JSDOM/.test(t.fullName) && t.status === 'passed'));
+          assert.ok(cases.filter(t => t.status === 'failed').every(t => t.failureMessages.some(m => /toContain/.test(m))));
+          console.log('Expected CSS assertion failures with passing JSDOM control:', process.env.RESULT);
+          JS
+          }
+          git show ca0ad89d8fbfedd26698554878031f261980700b:"$source_file" > "$source_file"
+          check_broken upstream
+          git restore -- "$source_file"
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('packages/core/content-manager/admin/src/pages/EditView/components/FormLayout.tsx')
+          text = path.read_text()
+          old = "shouldUseResponsiveGrid(typeof navigator === 'undefined' ? undefined : navigator.userAgent)"
+          assert text.count(old) == 1
+          path.write_text(text.replace(old, "process.env.NODE_ENV !== 'test'"))
+          PY
+          git show fc6bff23f1cf96c643115cfecd49a672d001ab91:"$test_file" > "$test_file"
+          yarn workspace @strapi/content-manager test:front --runInBand admin/src/pages/EditView/components/tests/FormLayout.test.tsx --json --outputFile="$RUNNER_TEMP/grid-old-tests-mutant.json"
+          node - <<'JS'
+          const assert = require('node:assert/strict');
+          const r = require(process.env.RUNNER_TEMP + '/grid-old-tests-mutant.json');
+          assert.equal(r.numPassedTests, 3);
+          assert.equal(r.numFailedTests, 0);
+          console.log('Coverage gap reproduced: old helper-only tests miss broken component selection.');
+          JS
+          git restore -- "$test_file"
+          check_broken bypassed-helper
+          git restore -- "$source_file" "$test_file"
+          trap - EXIT
+      - name: Complete content-manager frontend suite
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: yarn workspace @strapi/content-manager test:front --runInBand --json --outputFile="$RUNNER_TEMP/content-manager-front.json"
+      - name: Complete content-manager server unit suite
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: yarn workspace @strapi/content-manager test:unit --runInBand --json --outputFile="$RUNNER_TEMP/content-manager-unit.json"
+      - name: Frontend and backend type checking
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: |
+          yarn workspace @strapi/content-manager test:ts:front
+          yarn workspace @strapi/content-manager test:ts:back
+      - name: Package lint and changed-file formatting
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: |
+          yarn workspace @strapi/content-manager lint
+          yarn prettier --check packages/core/content-manager/admin/src/pages/EditView/components/tests/FormLayout.test.tsx
+      - name: Verify exact source and test-only follow-up
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          git diff --exit-code
+          git diff --cached --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          git diff --check fc6bff23f1cf96c643115cfecd49a672d001ab91 HEAD
+          test "$(git diff --name-only fc6bff23f1cf96c643115cfecd49a672d001ab91 HEAD)" = "packages/core/content-manager/admin/src/pages/EditView/components/tests/FormLayout.test.tsx"
+          node - <<'JS'
+          const fs = require('node:fs');
+          for (const name of ['grid-fixed', 'content-manager-front', 'content-manager-unit']) {
+            const r = require(process.env.RUNNER_TEMP + '/' + name + '.json');
+            const record = {source: process.env.EXPECTED_SOURCE, name, success: r.success,
+              passed: r.numPassedTests, failed: r.numFailedTests, pending: r.numPendingTests,
+              todo: r.numTodoTests, suites: r.numTotalTestSuites};
+            console.log(JSON.stringify(record));
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, JSON.stringify(record) + '\n\n');
+          }
+          JS
+      - name: Preserve test evidence
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: grid-component-review-node-${{ matrix.node }}
+          path: |
+            ${{ runner.temp }}/grid-*.json
+            ${{ runner.temp }}/content-manager-*.json
+          retention-days: 7
+          if-no-files-found: error
