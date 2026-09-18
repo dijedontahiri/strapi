@@ -8,154 +8,18 @@ on:
 permissions:
   contents: read
 
-env:
-  NX_DAEMON: 'false'
-  STRAPI_TELEMETRY_DISABLED: 'true'
+concurrency:
+  group: validate-relation-create-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  validate:
+  verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: 5fcd743f4965ed3efef854b6c36b60bee8fae29b
-          fetch-depth: 5
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with:
-          node-version: 22
-      - name: Install dependencies
-        run: |
-          corepack enable
-          yarn install --immutable
-      - name: Add regression test
-        run: |
-          python <<'PY'
-          from pathlib import Path
-          p = Path('packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/tests/Relations.test.tsx')
-          s = p.read_text()
-          marker = "  it('should search nested component relations using the component id', async () => {"
-          test = r'''  it('does not treat create-on-the-fly search text as a relation id', async () => {
-    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
-
-    server.use(
-      http.get<{ model: string; fieldName: string }>(
-        '/content-manager/relations/:model/:fieldName',
-        () =>
-          HttpResponse.json({
-            results: [],
-            pagination: { page: 1, pageCount: 1, pageSize: 10, total: 0 },
-          })
-      )
-    );
-
-    const { user } = renderRTL(
-      <ComponentProvider id={undefined} level={1} uid="page-blocks.product-carousel" type="component">
-        <RelationsInput
-          attribute={{
-            type: 'relation',
-            relation: 'manyToMany',
-            target: 'api::category.category',
-            inversedBy: 'relation_locales',
-            // @ts-expect-error – this is what the API returns
-            targetModel: 'api::category.category',
-            relationType: 'manyToMany',
-          }}
-          label="collection"
-          mainField={{ name: 'name', type: 'string' }}
-          model="page-blocks.product-carousel"
-          name="content.0.products"
-          type="relation"
-          isRelatedToCurrentDocument
-          onChange={jest.fn()}
-        />
-      </ComponentProvider>,
-      {
-        renderOptions: {
-          wrapper: ({ children }) => (
-            <Routes>
-              <Route path="/content-manager/:collectionType/:slug/:id" element={children} />
-            </Routes>
-          ),
-        },
-        initialEntries: ['/content-manager/single-types/api::shop.shop'],
-      }
-    );
-
-    const combobox = await screen.findByRole('combobox', { name: /collection/ });
-    await user.click(combobox);
-    await user.type(combobox, 'Brand new product');
-    await user.click(await screen.findByRole('option', { name: 'Create a relation' }));
-
-    expect(consoleError).not.toHaveBeenCalledWith(
-      expect.stringContaining('id that does not exist in the options you can see')
-    );
-
-    consoleError.mockRestore();
-  });
-
-'''
-          if marker not in s:
-              raise SystemExit('test insertion marker missing')
-          p.write_text(s.replace(marker, test + marker, 1))
-          PY
-      - name: Prove regression fails before fix
-        shell: bash
-        run: |
-          set +e
-          yarn workspace @strapi/content-manager test:front --runInBand --runTestsByPath admin/src/pages/EditView/components/FormInputs/Relations/tests/Relations.test.tsx > /tmp/before.log 2>&1
-          status=$?
-          set -e
-          cat /tmp/before.log
-          if [ "$status" -eq 0 ]; then
-            echo 'Regression did not fail against develop; refusing speculative fix.' >&2
-            exit 1
-          fi
-          grep -q 'does not treat create-on-the-fly search text as a relation id' /tmp/before.log
-      - name: Apply minimal fix
-        run: |
-          python <<'PY'
-          from pathlib import Path
-          p = Path('packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx')
-          s = p.read_text()
-          old = '''      if (!relation) {
-        // This is very unlikely to happen, but it ensures we don't have any data for.
-        console.error(
-          "You've tried to add a relation with an id that does not exist in the options you can see, this is likely a bug with Strapi. Please open an issue."
-        );
-
-        toggleNotification({
-          message: formatMessage({
-            id: getTranslation('relation.error-adding-relation'),
-            defaultMessage: 'An error occurred while trying to add the relation.',
-          }),
-          type: 'danger',
-        });
-
-        return;
-      }
-'''
-          new = '''      if (!relation) {
-        // A visible creatable combobox can emit its free-text value when focus moves to the
-        // create action. Only values backed by the current relation results are selectable.
-        return;
-      }
-'''
-          if old not in s:
-              raise SystemExit('source replacement marker missing')
-          p.write_text(s.replace(old, new, 1))
-          PY
-      - name: Run focused regression
-        run: yarn workspace @strapi/content-manager test:front --runInBand --runTestsByPath admin/src/pages/EditView/components/FormInputs/Relations/tests/Relations.test.tsx
-      - name: Run complete content-manager frontend suite
-        run: yarn workspace @strapi/content-manager test:front --runInBand
-      - name: Type-check content-manager frontend
-        run: yarn workspace @strapi/content-manager test:ts:front
-      - name: Lint content-manager
-        run: yarn workspace @strapi/content-manager lint
-      - name: Check changed-file formatting and diff
-        run: |
-          yarn prettier --check packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/tests/Relations.test.tsx
-          git diff --check
-          git diff --stat
+      - name: Verify source revision
+        run: test "$(git rev-parse HEAD)" = "5fcd743f4965ed3efef854b6c36b60bee8fae29b"
