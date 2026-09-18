@@ -35,19 +35,19 @@ jobs:
           yarn install --immutable
       - name: Build package and dependencies
         run: yarn nx run @strapi/content-type-builder:build --nx-ignore-cycles --parallel=2
-      - name: Prove regressions against upstream
+      - name: Prove the review regression against the previous PR head
         if: matrix.node == 22
         shell: bash
         run: |
           source=packages/core/content-type-builder/server/src/services/schema-builder/content-type-builder.ts
           trap 'git restore -- "$source"' EXIT
-          git show ca0ad89d8fbfedd26698554878031f261980700b:"$source" > "$source"
+          git show c66d527180130152a2bd47a643ffae684123db16:"$source" > "$source"
           set +e
           yarn workspace @strapi/content-type-builder test:unit:vitest server/src/services/schema-builder/__tests__/content-type-options.vitest.test.ts --reporter=json --outputFile=/tmp/options-before.json
           status=$?
           set -e
           test "$status" -ne 0
-          node -e "const r=require('/tmp/options-before.json'); const failed=(r.numFailedTests ?? r.numFailedTestSuites); if(!(failed>=1)) throw Error('Expected option regressions to fail against upstream'); console.log('Upstream regression confirmed');"
+          node -e "const r=require('/tmp/options-before.json'); const failed=(r.numFailedTests ?? r.numFailedTestSuites); if(!(failed>=1)) throw Error('Expected the omitted draftAndPublish regression to fail against the previous PR head'); console.log('Previous-head regression confirmed');"
           git restore -- "$source"
           trap - EXIT
       - name: Run complete package Vitest suite
@@ -61,6 +61,6 @@ jobs:
       - name: Check changed-file formatting
         if: success() || failure()
         run: yarn prettier --check packages/core/content-type-builder/server/src/services/schema-builder/content-type-builder.ts packages/core/content-type-builder/server/src/services/schema-builder/__tests__/content-type-options.vitest.test.ts
-      - name: Check diff whitespace
+      - name: Check follow-up diff whitespace
         if: success() || failure()
-        run: git diff --check a1e2b0d2d7ed90509c091e084885c6bd57112aa2 HEAD
+        run: git diff --check c66d527180130152a2bd47a643ffae684123db16 HEAD
