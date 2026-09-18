@@ -1,0 +1,63 @@
+name: Validate duplicate locale deletion lock
+
+on:
+  push:
+    branches:
+      - validate/27706-duplicate-locale-lock-20260918
+
+permissions:
+  contents: read
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+
+jobs:
+  verify:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 7b9ebf7403e4a5c32cc628ce708ed407655a0aa2
+          fetch-depth: 3
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install pinned dependencies
+        run: |
+          corepack enable
+          yarn install --immutable
+      - name: Prove locking regression fails on the previous PR revision
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          source_file=packages/plugins/i18n/server/src/services/locales.ts
+          trap 'git restore -- "$source_file"' EXIT
+          git show 4cdf39ff0e6e3b8f702033552ae60dcf31060c7d:"$source_file" > "$source_file"
+          set +e
+          yarn workspace @strapi/i18n test:unit --runInBand server/src/services/__tests__/locales-duplicate-delete.test.ts
+          status=$?
+          set -e
+          test "$status" -ne 0
+          git restore -- "$source_file"
+          trap - EXIT
+      - name: Run focused duplicate-locale regression tests
+        run: yarn workspace @strapi/i18n test:unit --runInBand server/src/services/__tests__/locales-duplicate-delete.test.ts
+      - name: Run complete i18n unit suite
+        run: yarn workspace @strapi/i18n test:unit --runInBand
+      - name: Build i18n package and dependencies
+        run: yarn nx run @strapi/i18n:build --nx-ignore-cycles --parallel=2
+      - name: Lint i18n package
+        run: yarn workspace @strapi/i18n lint
+      - name: Check changed-file formatting
+        run: yarn prettier --check packages/plugins/i18n/server/src/services/locales.ts packages/plugins/i18n/server/src/services/__tests__/locales-duplicate-delete.test.ts
+      - name: Verify exact PR source remained unchanged
+        run: |
+          git diff --exit-code 7b9ebf7403e4a5c32cc628ce708ed407655a0aa2 -- packages/plugins/i18n/server/src/services/locales.ts packages/plugins/i18n/server/src/services/__tests__/locales-duplicate-delete.test.ts
