@@ -6,7 +6,7 @@ on:
       - fix/27246-relation-create-search-text
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   NX_DAEMON: 'false'
@@ -19,8 +19,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: fix/27246-relation-create-search-text
+          ref: 5fcd743f4965ed3efef854b6c36b60bee8fae29b
           fetch-depth: 5
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 22
@@ -153,15 +154,8 @@ jobs:
         run: yarn workspace @strapi/content-manager test:ts:front
       - name: Lint content-manager
         run: yarn workspace @strapi/content-manager lint
-      - name: Check changed-file formatting
-        run: yarn prettier --check packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/tests/Relations.test.tsx
-      - name: Commit verified fix without validation workflow
+      - name: Check changed-file formatting and diff
         run: |
-          git rm .github/workflows/validate-27246-relation-create.yml
+          yarn prettier --check packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/tests/Relations.test.tsx
           git diff --check
-          git status --short
-          git config user.name 'dijedontahiri'
-          git config user.email '99071957+dijedontahiri@users.noreply.github.com'
-          git add packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/tests/Relations.test.tsx
-          git commit -m 'fix(content-manager): ignore free text when creating relations'
-          git push origin HEAD:fix/27246-relation-create-search-text
+          git diff --stat
