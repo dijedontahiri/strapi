@@ -130,7 +130,9 @@ describe('transaction context ownership', () => {
                 .execute()
             ).rejects.toThrow('Transaction is closed');
           });
-          await expect(strapi.db.transaction(async () => {})).rejects.toThrow('Transaction is closed');
+          await expect(strapi.db.transaction(async () => {})).rejects.toThrow(
+            'Transaction is closed'
+          );
         });
         await strapi.db.transaction(async ({ onCommit }) => {
           await strapi.db
@@ -211,7 +213,7 @@ describe('transaction context ownership', () => {
     const resume = createGate();
     let nested;
     let nestedError;
-    const startTransaction = jest.spyOn(strapi.db.connection, 'transaction');
+    const startTransaction = jest.spyOn(strapi.db.connection.context, 'transaction');
     const nestedCallback = jest.fn(async () => {
       await strapi.db
         .queryBuilder('strapi::core-store')

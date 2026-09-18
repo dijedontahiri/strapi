@@ -193,10 +193,16 @@ describe('transaction context ownership', () => {
         await database.transaction(async () => {
           await outer[finalization]();
           assert.throws(() => transactionCtx.get(), /Transaction is closed/);
-          await assert.rejects(database.transaction(async () => {}), /Transaction is closed/);
+          await assert.rejects(
+            database.transaction(async () => {}),
+            /Transaction is closed/
+          );
         });
         assert.throws(() => transactionCtx.get(), /Transaction is closed/);
-        await assert.rejects(database.transaction(async () => {}), /Transaction is closed/);
+        await assert.rejects(
+          database.transaction(async () => {}),
+          /Transaction is closed/
+        );
       });
       await database.transaction(({ onCommit }) => {
         onCommit(() => calls.push('new transaction'));
@@ -405,12 +411,14 @@ describe('transaction context ownership', () => {
     it(`rejects detached nested work while ${finalization} is in flight without opening a second transaction`, async () => {
       const finish = createGate();
       const resume = createGate();
-      const slowTransaction = createTransaction();
-      const finishTransaction = slowTransaction[finalization].bind(slowTransaction);
-      slowTransaction[finalization] = async () => {
-        await finish.promise;
-        return finishTransaction();
-      };
+      const transaction = createTransaction();
+      const slowTransaction = {
+        ...transaction,
+        async [finalization]() {
+          await finish.promise;
+          return transaction[finalization]();
+        },
+      } as unknown as Knex.Transaction;
       const { database, transactions } = createDatabase(slowTransaction);
       let detached: Promise<unknown> | undefined;
 
