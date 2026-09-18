@@ -34,6 +34,8 @@ jobs:
         run: |
           corepack enable
           yarn install --immutable
+      - name: Build test dependency
+        run: yarn nx run @strapi/utils:build --nx-ignore-cycles
       - name: Prove locking regression fails on the previous PR revision
         if: matrix.node == 22
         shell: bash
