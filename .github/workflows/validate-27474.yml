@@ -1,0 +1,65 @@
+name: validate-27474-traverse-parent
+
+on:
+  push:
+    branches:
+      - validation/27474-parent-reset
+
+permissions:
+  contents: read
+
+jobs:
+  utils:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 8555c80d175484d2afcd9b4a5ec06387b00a5241
+          fetch-depth: 2
+      - name: Verify candidate source
+        run: |
+          test "$(git rev-parse HEAD)" = "8555c80d175484d2afcd9b4a5ec06387b00a5241"
+          git status --porcelain=v1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: yarn
+      - name: Enable Corepack
+        run: corepack enable
+      - name: Install dependencies
+        run: yarn install --immutable
+      - name: Baseline negative control
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          git checkout d83af0410bf31b034b01757729f2231862ee5e87 -- packages/core/utils/src/traverse-entity.ts
+          set +e
+          yarn workspace @strapi/utils test:unit --runInBand src/__tests__/traverse-entity.parent.test.ts
+          status=$?
+          set -e
+          git checkout 8555c80d175484d2afcd9b4a5ec06387b00a5241 -- packages/core/utils/src/traverse-entity.ts
+          if [ "$status" -eq 0 ]; then
+            echo "Regression unexpectedly passes on the develop baseline"
+            exit 1
+          fi
+      - name: Focused regression
+        run: yarn workspace @strapi/utils test:unit --runInBand src/__tests__/traverse-entity.parent.test.ts
+      - name: Full utils unit suite
+        run: yarn workspace @strapi/utils test:unit --runInBand
+      - name: Utils TypeScript
+        run: yarn workspace @strapi/utils test:ts
+      - name: Utils lint
+        run: yarn workspace @strapi/utils lint
+      - name: Changed-file formatting
+        run: yarn prettier --check packages/core/utils/src/traverse-entity.ts packages/core/utils/src/__tests__/traverse-entity.parent.test.ts
+      - name: Verify final source is exact and clean
+        run: |
+          test "$(git rev-parse HEAD)" = "8555c80d175484d2afcd9b4a5ec06387b00a5241"
+          git diff --exit-code
+          test -z "$(git status --porcelain=v1)"
