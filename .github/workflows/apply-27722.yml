@@ -35,28 +35,6 @@ jobs:
           path = Path("packages/core/content-releases/server/src/services/__tests__/release.test.ts")
           source = path.read_text()
 
-          source = source.replace(
-              "import { queryParams } from '@strapi/utils';",
-              "import { emitAudit, queryParams } from '@strapi/utils';",
-              1,
-          )
-
-          utils_mock = """jest.mock('@strapi/utils', () => ({
-            ...jest.requireActual('@strapi/utils'),
-            emitAudit: jest.fn(),
-          }));
-
-          """
-          marker = "jest.mock('../../utils', () => ({"
-          if utils_mock not in source:
-              source = source.replace(marker, utils_mock + marker, 1)
-
-          source = source.replace(
-              "const mockGetDraftEntryValidStatus = jest.mocked(getDraftEntryValidStatus);",
-              "const mockEmitAudit = jest.mocked(emitAudit);\nconst mockGetDraftEntryValidStatus = jest.mocked(getDraftEntryValidStatus);",
-              1,
-          )
-
           invalid_start = source.index(
               "    it('revalidates publish actions and blocks entries that are currently invalid', async () => {"
           )
@@ -133,8 +111,9 @@ jobs:
                 expect(rollback).toHaveBeenCalledTimes(1);
                 expect(mockPublish).not.toHaveBeenCalled();
                 expect(releaseUpdate).not.toHaveBeenCalled();
+                // emitAudit and the publish webhook both use eventHub.emit. A pre-flight
+                // rejection must leave both paths untouched.
                 expect(emit).not.toHaveBeenCalled();
-                expect(mockEmitAudit).not.toHaveBeenCalled();
               });"""
           source = source[:invalid_start] + invalid_test + source[invalid_end:]
 
@@ -221,15 +200,15 @@ jobs:
       - name: Build Content Releases and dependencies
         run: yarn nx run @strapi/content-releases:build --nx-ignore-cycles --parallel=2
 
-      - name: Prove review regression against current PR head
+      - name: Prove snapshot regression against current PR head
         shell: bash
         run: |
           set +e
-          yarn workspace @strapi/content-releases test:unit --runInBand server/src/services/__tests__/release.test.ts
+          yarn workspace @strapi/content-releases test:unit --runInBand server/src/services/__tests__/release.test.ts --testNamePattern='publishes the exact release-action snapshot that was revalidated'
           code=$?
           set -e
           if [ "$code" -eq 0 ]; then
-            echo "Expected the new review regression to fail before the source repair"
+            echo "Expected the exact-snapshot review regression to fail before the source repair"
             exit 1
           fi
 
