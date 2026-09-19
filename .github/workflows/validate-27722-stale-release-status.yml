@@ -106,6 +106,12 @@ jobs:
               p.write_text(s.replace(old, new, 1))
           PY
 
+      - name: Format candidate files
+        run: |
+          cd source
+          yarn prettier --write packages/core/content-releases/server/src/services/release.ts packages/core/content-releases/server/src/services/release-action.ts packages/core/content-releases/server/src/services/__tests__/release.test.ts packages/core/content-releases/server/src/services/__tests__/release-stale-status.test.ts packages/core/content-releases/server/src/services/__tests__/release-action-revalidation.test.ts
+          yarn prettier --check packages/core/content-releases/server/src/services/release.ts packages/core/content-releases/server/src/services/release-action.ts packages/core/content-releases/server/src/services/__tests__/release.test.ts packages/core/content-releases/server/src/services/__tests__/release-stale-status.test.ts packages/core/content-releases/server/src/services/__tests__/release-action-revalidation.test.ts
+
       - name: Run focused regressions
         run: |
           cd source
@@ -126,11 +132,6 @@ jobs:
           cd source
           yarn workspace @strapi/content-releases lint
 
-      - name: Check formatting
-        run: |
-          cd source
-          yarn prettier --check packages/core/content-releases/server/src/services/release.ts packages/core/content-releases/server/src/services/release-action.ts packages/core/content-releases/server/src/services/__tests__/release.test.ts packages/core/content-releases/server/src/services/__tests__/release-stale-status.test.ts packages/core/content-releases/server/src/services/__tests__/release-action-revalidation.test.ts
-
       - name: Verify only intended source changes
         run: |
           cd source
@@ -147,7 +148,7 @@ jobs:
         if: always() && matrix.node == 22
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-27722-v3
+          name: candidate-27722-v4
           path: |
             source/packages/core/content-releases/server/src/services/release.ts
             source/packages/core/content-releases/server/src/services/release-action.ts
