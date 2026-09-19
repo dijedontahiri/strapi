@@ -41,6 +41,9 @@ jobs:
       - run: corepack enable
       - run: yarn install --immutable
 
+      - name: Build runtime workspace dependencies
+        run: yarn nx run-many --targets=build --projects=@strapi/types,@strapi/utils,@strapi/database --nx-ignore-cycles --parallel=3
+
       - name: Add focused regression test
         shell: bash
         run: |
