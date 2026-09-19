@@ -15,7 +15,7 @@ concurrency:
 env:
   NX_DAEMON: 'false'
   STRAPI_TELEMETRY_DISABLED: 'true'
-  EXPECTED_SOURCE: 5046c60f14f5768ca0cb5d650b18d18f0f53cd56
+  EXPECTED_SOURCE: 6b11ff2e65f0fe116c0433c88a33e3bd2e39380f
   BASE_SOURCE: d83af0410bf31b034b01757729f2231862ee5e87
 
 jobs:
@@ -30,7 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 5046c60f14f5768ca0cb5d650b18d18f0f53cd56
+          ref: 6b11ff2e65f0fe116c0433c88a33e3bd2e39380f
           fetch-depth: 8
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
@@ -46,7 +46,7 @@ jobs:
         env:
           NODE_OPTIONS: --max-old-space-size=6144
         run: yarn nx run @strapi/admin:build --nx-ignore-cycles --parallel=2
-      - name: Prove the backdrop regression against current develop
+      - name: Prove the outside-interaction regression against current develop
         if: matrix.node == 22
         shell: bash
         run: |
