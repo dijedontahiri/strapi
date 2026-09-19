@@ -47,7 +47,7 @@ jobs:
           corepack enable
           yarn install --immutable > "$RUNNER_TEMP/evidence/install.log" 2>&1 || { tail -n 100 "$RUNNER_TEMP/evidence/install.log"; exit 1; }
           yarn nx run @strapi/data-transfer:build --nx-ignore-cycles --parallel=2 > "$RUNNER_TEMP/evidence/build.log" 2>&1 || { tail -n 100 "$RUNNER_TEMP/evidence/build.log"; exit 1; }
-      - name: Reproduce late-close failures against original implementation
+      - name: Reproduce late-close failures with the repository native Vitest preset
         shell: bash
         run: |
           set -euo pipefail
@@ -56,11 +56,12 @@ jobs:
           path=pathlib.Path('packages/core/data-transfer/src/strapi/remote/handlers/utils.ts')
           assert subprocess.check_output(['git','hash-object',str(path)],text=True).strip()=='100897a8eaf645a1dc86494fe318c2c8657aa9f5'
           PY
-          cat > packages/core/data-transfer/src/strapi/remote/handlers/__tests__/utils-lifecycle.test.ts <<'TS'
+          cat > packages/core/data-transfer/src/strapi/remote/handlers/__tests__/utils-lifecycle.vitest.test.ts <<'TS'
           import { EventEmitter } from 'events';
           import type { Context } from 'koa';
           import type { WebSocket } from 'ws';
           import { WebSocketServer } from 'ws';
+          import { afterEach, describe, expect, test, vi } from 'vitest';
 
           import { handlerControllerFactory } from '../utils';
 
@@ -68,8 +69,8 @@ jobs:
 
           const createOwner = () => ({
             server: { httpServer: { headersTimeout: 60_000, requestTimeout: 300_000 } },
-            db: { lifecycles: { disable: jest.fn(), enable: jest.fn() } },
-            log: { info: jest.fn(), error: jest.fn() },
+            db: { lifecycles: { disable: vi.fn(), enable: vi.fn() } },
+            log: { info: vi.fn(), error: vi.fn() },
           });
 
           const setOwner = (owner: ReturnType<typeof createOwner>) => {
@@ -92,17 +93,17 @@ jobs:
 
           const connect = async (onClose: () => Promise<void>) => {
             const client = Object.assign(new EventEmitter(), {
-              terminate: jest.fn(),
-              send: jest.fn(),
+              terminate: vi.fn(),
+              send: vi.fn(),
             });
-            const destroy = jest.fn();
+            const destroy = vi.fn();
             const ctx = {
               headers: { upgrade: 'websocket' },
               req: { socket: { destroy } },
               request: { socket: {} },
             } as unknown as Context;
             let server: WebSocketServer | undefined;
-            jest.spyOn(WebSocketServer.prototype, 'handleUpgrade').mockImplementation(function (
+            vi.spyOn(WebSocketServer.prototype, 'handleUpgrade').mockImplementation(function (
               this: WebSocketServer,
               request,
               _socket,
@@ -112,7 +113,7 @@ jobs:
               server = this;
               callback(client as unknown as WebSocket, request);
             });
-            await handlerControllerFactory(() => ({ onClose }))({ verify: jest.fn() })(ctx);
+            await handlerControllerFactory(() => ({ onClose }))({ verify: vi.fn() })(ctx);
             expect(client.listenerCount('close')).toBe(1);
             const close = client.listeners('close')[0] as (
               code: number,
@@ -123,7 +124,7 @@ jobs:
           };
 
           afterEach(() => {
-            jest.restoreAllMocks();
+            vi.restoreAllMocks();
             if (originalStrapi) {
               Object.defineProperty(globalThis, 'strapi', originalStrapi);
             } else {
@@ -195,9 +196,9 @@ jobs:
             });
           });
           TS
-          yarn prettier --write packages/core/data-transfer/src/strapi/remote/handlers/__tests__/utils-lifecycle.test.ts
+          yarn prettier --write packages/core/data-transfer/src/strapi/remote/handlers/__tests__/utils-lifecycle.vitest.test.ts
           set +e
-          yarn workspace @strapi/data-transfer test:unit --runInBand --runTestsByPath src/strapi/remote/handlers/__tests__/utils-lifecycle.test.ts > "$RUNNER_TEMP/evidence/original.log" 2>&1
+          yarn workspace @strapi/data-transfer test:unit:vitest src/strapi/remote/handlers/__tests__/utils-lifecycle.vitest.test.ts --retry=0 > "$RUNNER_TEMP/evidence/original.log" 2>&1
           result=$?
           set -e
           cat "$RUNNER_TEMP/evidence/original.log"
@@ -205,8 +206,9 @@ jobs:
           python3 - <<'PY'
           import os,pathlib,re
           text=(pathlib.Path(os.environ['RUNNER_TEMP'])/'evidence/original.log').read_text()
+          text=re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]','',text)
           assert 'strapi is not defined' in text,text[-10000:]
-          assert re.search(r'Tests:\s+3 failed, 1 passed, 4 total',text),text[-10000:]
+          assert re.search(r'Tests\s+3 failed\s*\|\s*1 passed\s*\(4\)',text),text[-10000:]
           PY
       - name: Apply only the connection-owner cleanup correction
         shell: bash
@@ -219,10 +221,6 @@ jobs:
           prefix,block,suffix=text[:start],text[start:end],text[end:]
           block=block.replace('      const cb: WSCallback = (ws) => {','      const cb: WSCallback = (ws) => {\n        const connectionStrapi = strapi;')
           block=block.replace('strapi?.log?.','connectionStrapi.log?.')
-          old="""            resetTimeouts();
-                      strapi.db.lifecycles.enable();
-                      strapi.log.info('[Data transfer] Restoring lifecycle hooks');"""
-          # Preserve the repository's exact indentation rather than matching rendered text.
           old="            resetTimeouts();\n            strapi.db.lifecycles.enable();\n            strapi.log.info('[Data transfer] Restoring lifecycle hooks');"
           assert block.count(old)==1
           new="            // A delayed close must not revive a destroyed or replacement instance.\n            if (hasHttpServer() && strapi === connectionStrapi) {\n              resetTimeouts();\n              connectionStrapi.db.lifecycles.enable();\n              connectionStrapi.log.info('[Data transfer] Restoring lifecycle hooks');\n            }"
@@ -230,30 +228,32 @@ jobs:
           p.write_text(prefix+block+suffix)
           PY
           yarn prettier --write packages/core/data-transfer/src/strapi/remote/handlers/utils.ts
-          yarn workspace @strapi/data-transfer test:unit --runInBand --runTestsByPath src/strapi/remote/handlers/__tests__/utils-lifecycle.test.ts > "$RUNNER_TEMP/evidence/fixed.log" 2>&1 || { cat "$RUNNER_TEMP/evidence/fixed.log"; exit 1; }
+          yarn workspace @strapi/data-transfer test:unit:vitest src/strapi/remote/handlers/__tests__/utils-lifecycle.vitest.test.ts --retry=0 > "$RUNNER_TEMP/evidence/fixed.log" 2>&1 || { cat "$RUNNER_TEMP/evidence/fixed.log"; exit 1; }
           cat "$RUNNER_TEMP/evidence/fixed.log"
-      - name: Run the full package unit suite, types, lint and formatting
+      - name: Run full package Jest and Vitest suites, types, lint and formatting
         shell: bash
         run: |
           set -euo pipefail
-          yarn workspace @strapi/data-transfer test:unit --runInBand > "$RUNNER_TEMP/evidence/package.log" 2>&1 || { tail -n 150 "$RUNNER_TEMP/evidence/package.log"; exit 1; }
-          tail -n 15 "$RUNNER_TEMP/evidence/package.log"
+          yarn workspace @strapi/data-transfer test:unit --runInBand > "$RUNNER_TEMP/evidence/package-jest.log" 2>&1 || { tail -n 150 "$RUNNER_TEMP/evidence/package-jest.log"; exit 1; }
+          tail -n 15 "$RUNNER_TEMP/evidence/package-jest.log"
+          yarn workspace @strapi/data-transfer test:unit:vitest --retry=0 > "$RUNNER_TEMP/evidence/package-vitest.log" 2>&1 || { tail -n 150 "$RUNNER_TEMP/evidence/package-vitest.log"; exit 1; }
+          tail -n 15 "$RUNNER_TEMP/evidence/package-vitest.log"
           yarn workspace @strapi/data-transfer test:ts > "$RUNNER_TEMP/evidence/types.log" 2>&1 || { cat "$RUNNER_TEMP/evidence/types.log"; exit 1; }
           yarn workspace @strapi/data-transfer lint > "$RUNNER_TEMP/evidence/lint.log" 2>&1 || { cat "$RUNNER_TEMP/evidence/lint.log"; exit 1; }
-          yarn prettier --check packages/core/data-transfer/src/strapi/remote/handlers/utils.ts packages/core/data-transfer/src/strapi/remote/handlers/__tests__/utils-lifecycle.test.ts
-          git add --intent-to-add packages/core/data-transfer/src/strapi/remote/handlers/__tests__/utils-lifecycle.test.ts
+          yarn prettier --check packages/core/data-transfer/src/strapi/remote/handlers/utils.ts packages/core/data-transfer/src/strapi/remote/handlers/__tests__/utils-lifecycle.vitest.test.ts
+          git add --intent-to-add packages/core/data-transfer/src/strapi/remote/handlers/__tests__/utils-lifecycle.vitest.test.ts
           git diff --check
           python3 - <<'PY'
           import hashlib,json,os,pathlib,subprocess
           out=pathlib.Path(os.environ['RUNNER_TEMP'])/'evidence'
-          paths=['packages/core/data-transfer/src/strapi/remote/handlers/utils.ts','packages/core/data-transfer/src/strapi/remote/handlers/__tests__/utils-lifecycle.test.ts']
+          paths=['packages/core/data-transfer/src/strapi/remote/handlers/utils.ts','packages/core/data-transfer/src/strapi/remote/handlers/__tests__/utils-lifecycle.vitest.test.ts']
           assert set(subprocess.check_output(['git','diff','--name-only'],text=True).splitlines())==set(paths)
           assert subprocess.check_output(['git','diff','--cached','--name-only'],text=True).strip()==''
           assert subprocess.check_output(['git','ls-files','--others','--exclude-standard'],text=True).strip()==''
           assert subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()==os.environ['BASE']
           (out/'candidate.patch').write_bytes(subprocess.check_output(['git','diff']))
           (out/'manifest.json').write_text(json.dumps({'base':os.environ['BASE'],'files':{p:hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() for p in paths}},indent=2))
-          (out/'verified.txt').write_text('Original: three regression failures and one passing control. Fixed: regression suite, complete package unit suite, package type check, package lint, formatting and exact source scope passed. Full monorepo and browser E2E were not run. Independent repair preparation only.\n')
+          (out/'verified.txt').write_text('Original: three regression failures and one passing control. Fixed: regression suite, complete package Jest and Vitest suites, package type check, package lint, formatting and exact source scope passed. Full monorepo and browser E2E were not run. Independent repair preparation only.\n')
           PY
       - uses: actions/upload-artifact@v4
         if: always()
@@ -303,7 +303,7 @@ jobs:
           PY
           git config user.name 'Dijedon Tahiri'
           git config user.email '99071957+dijedontahiri@users.noreply.github.com'
-          git commit -m 'fix(data-transfer): keep late cleanup scoped to its connection owner' -m "AI-assisted independent repair preparation. Before/after regressions, full package unit suite, type checks and lint are recorded in workflow run $GITHUB_RUN_ID. Full monorepo and browser E2E remain outstanding. No existing PR branch is modified."
+          git commit -m 'fix(data-transfer): keep late cleanup scoped to its connection owner' -m "AI-assisted independent repair preparation. Before/after regressions, full package Jest and Vitest suites, type checks and lint are recorded in workflow run $GITHUB_RUN_ID. Full monorepo and browser E2E remain outstanding. No existing PR branch is modified."
           git push origin "HEAD:refs/heads/$BRANCH"
           test "$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)" = "$(git rev-parse HEAD)"
           git show --stat --oneline HEAD
