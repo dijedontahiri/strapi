@@ -1,0 +1,92 @@
+name: Validate data-transfer close ownership current
+
+on:
+  push:
+    branches:
+      - validate/data-transfer-close-owner-current-20260919
+
+permissions:
+  contents: read
+
+env:
+  CI: 'true'
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+  SOURCE: 5c1a9b09d9835e73e654c713df486bff385a6683
+  BASE: d83af0410bf31b034b01757729f2231862ee5e87
+  TEST_FILE: packages/core/data-transfer/src/strapi/remote/handlers/__tests__/utils-lifecycle.vitest.test.ts
+  SOURCE_FILE: packages/core/data-transfer/src/strapi/remote/handlers/utils.ts
+
+jobs:
+  verify:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 5c1a9b09d9835e73e654c713df486bff385a6683
+          fetch-depth: 5
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install dependencies and build data-transfer
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE"
+          git cat-file -e "$BASE^{commit}"
+          corepack enable
+          yarn install --immutable
+          yarn nx run @strapi/data-transfer:build --nx-ignore-cycles --parallel=2
+      - name: Prove the regressions against current develop
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "$SOURCE_FILE" /tmp/fixed-utils.ts
+          trap 'cp /tmp/fixed-utils.ts "$SOURCE_FILE"' EXIT
+          git show "$BASE:$SOURCE_FILE" > "$SOURCE_FILE"
+          set +e
+          yarn workspace @strapi/data-transfer test:unit:vitest src/strapi/remote/handlers/__tests__/utils-lifecycle.vitest.test.ts --retry=0 > /tmp/baseline.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/baseline.log
+          test "$status" -ne 0
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          text = Path('/tmp/baseline.log').read_text()
+          text = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', text)
+          assert 'strapi is not defined' in text, text[-10000:]
+          assert re.search(r'Tests\s+3 failed\s*\|\s*1 passed\s*\(4\)', text), text[-10000:]
+          PY
+          cp /tmp/fixed-utils.ts "$SOURCE_FILE"
+          trap - EXIT
+      - name: Run focused candidate regression
+        run: yarn workspace @strapi/data-transfer test:unit:vitest src/strapi/remote/handlers/__tests__/utils-lifecycle.vitest.test.ts --retry=0
+      - name: Run complete data-transfer Jest suite
+        run: yarn workspace @strapi/data-transfer test:unit --runInBand
+      - name: Run complete data-transfer Vitest suite
+        run: yarn workspace @strapi/data-transfer test:unit:vitest --retry=0
+      - name: Type-check data-transfer
+        run: yarn workspace @strapi/data-transfer test:ts
+      - name: Lint data-transfer
+        run: yarn workspace @strapi/data-transfer lint
+      - name: Check formatting and exact source
+        shell: bash
+        run: |
+          set -euo pipefail
+          yarn prettier --check "$SOURCE_FILE" "$TEST_FILE"
+          test "$(git rev-parse HEAD)" = "$SOURCE"
+          git diff --exit-code
+          git diff --cached --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          git diff --check "$BASE" HEAD
+          actual="$(git diff --name-only "$BASE" HEAD | sort)"
+          expected="$(printf '%s\n' "$SOURCE_FILE" "$TEST_FILE" | sort)"
+          test "$actual" = "$expected"
