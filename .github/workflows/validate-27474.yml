@@ -20,11 +20,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 8555c80d175484d2afcd9b4a5ec06387b00a5241
-          fetch-depth: 2
+          ref: 4a07fe180ba75434530f29e4d4a3b3b8846c84ed
+          fetch-depth: 0
       - name: Verify candidate source
         run: |
-          test "$(git rev-parse HEAD)" = "8555c80d175484d2afcd9b4a5ec06387b00a5241"
+          test "$(git rev-parse HEAD)" = "4a07fe180ba75434530f29e4d4a3b3b8846c84ed"
           git status --porcelain=v1
       - uses: actions/setup-node@v4
         with:
@@ -43,7 +43,7 @@ jobs:
           yarn workspace @strapi/utils test:unit --runInBand src/__tests__/traverse-entity.parent.test.ts
           status=$?
           set -e
-          git checkout 8555c80d175484d2afcd9b4a5ec06387b00a5241 -- packages/core/utils/src/traverse-entity.ts
+          git checkout 4a07fe180ba75434530f29e4d4a3b3b8846c84ed -- packages/core/utils/src/traverse-entity.ts
           if [ "$status" -eq 0 ]; then
             echo "Regression unexpectedly passes on the develop baseline"
             exit 1
@@ -60,6 +60,6 @@ jobs:
         run: yarn prettier --check packages/core/utils/src/traverse-entity.ts packages/core/utils/src/__tests__/traverse-entity.parent.test.ts
       - name: Verify final source is exact and clean
         run: |
-          test "$(git rev-parse HEAD)" = "8555c80d175484d2afcd9b4a5ec06387b00a5241"
+          test "$(git rev-parse HEAD)" = "4a07fe180ba75434530f29e4d4a3b3b8846c84ed"
           git diff --exit-code
           test -z "$(git status --porcelain=v1)"
