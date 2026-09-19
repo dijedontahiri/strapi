@@ -1,0 +1,71 @@
+name: Validate #24274 AI enum values
+
+on:
+  push:
+    branches:
+      - validate/24274-ai-enum-values-20260920
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: 4fd274f0a5d8bd419d3e3429a03b4f7a95d4ba77
+          fetch-depth: 0
+      - name: Setup Node ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: yarn
+      - name: Enable Corepack
+        run: corepack enable
+      - name: Install dependencies
+        run: yarn install --immutable
+      - name: Verify exact candidate
+        run: test "$(git rev-parse HEAD)" = "4fd274f0a5d8bd419d3e3429a03b4f7a95d4ba77"
+      - name: Prove baseline regression fails
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          set -euo pipefail
+          TEST_PATH='packages/core/content-type-builder/admin/src/components/AIChat/lib/transforms/schemas/tests/toCTB.enumeration.test.ts'
+          cp "$TEST_PATH" /tmp/toCTB.enumeration.test.ts
+          git checkout d83af0410bf31b034b01757729f2231862ee5e87 -- packages/core/content-type-builder/admin/src/components/AIChat/lib/transforms/schemas/toCTB.ts
+          cp /tmp/toCTB.enumeration.test.ts "$TEST_PATH"
+          set +e
+          yarn workspace @strapi/content-type-builder test:front --runInBand "$TEST_PATH"
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo 'Baseline unexpectedly passed regression'
+            exit 1
+          fi
+          git checkout 4fd274f0a5d8bd419d3e3429a03b4f7a95d4ba77 -- packages/core/content-type-builder/admin/src/components/AIChat/lib/transforms/schemas/toCTB.ts "$TEST_PATH"
+      - name: Focused regression
+        run: yarn workspace @strapi/content-type-builder test:front --runInBand packages/core/content-type-builder/admin/src/components/AIChat/lib/transforms/schemas/tests/toCTB.enumeration.test.ts
+      - name: Content Type Builder frontend tests
+        if: matrix.node == 22
+        run: yarn workspace @strapi/content-type-builder test:front --runInBand
+      - name: TypeScript frontend
+        run: yarn workspace @strapi/content-type-builder test:ts:front
+      - name: ESLint affected files
+        if: matrix.node == 22
+        run: yarn eslint packages/core/content-type-builder/admin/src/components/AIChat/lib/transforms/schemas/toCTB.ts packages/core/content-type-builder/admin/src/components/AIChat/lib/transforms/schemas/tests/toCTB.enumeration.test.ts --max-warnings=0
+      - name: Prettier affected files
+        if: matrix.node == 22
+        run: yarn prettier --check packages/core/content-type-builder/admin/src/components/AIChat/lib/transforms/schemas/toCTB.ts packages/core/content-type-builder/admin/src/components/AIChat/lib/transforms/schemas/tests/toCTB.enumeration.test.ts
+      - name: Verify clean candidate tree
+        run: |
+          test "$(git rev-parse HEAD)" = "4fd274f0a5d8bd419d3e3429a03b4f7a95d4ba77"
+          test -z "$(git status --porcelain)"
