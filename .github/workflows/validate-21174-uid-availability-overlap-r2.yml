@@ -62,17 +62,22 @@ jobs:
           test "$status" -eq 1
           node - <<'NODE'
           const result = require('/tmp/uid-overlap-before.json');
+          const failed = result.testResults.flatMap((suite) =>
+            suite.assertionResults.filter((test) => test.status === 'failed')
+          );
           if (
             result.numFailedTests !== 1 ||
             result.numPassedTests !== 0 ||
-            result.numTotalTests !== 1 ||
-            result.numTotalTestSuites !== 1
+            result.numTotalTestSuites !== 1 ||
+            failed.length !== 1 ||
+            failed[0].title !== 'reserves space for availability feedback and truncates long UID values'
           ) {
             throw new Error(`Unexpected baseline result: ${JSON.stringify({
               failed: result.numFailedTests,
               passed: result.numPassedTests,
               total: result.numTotalTests,
               suites: result.numTotalTestSuites,
+              failedTitles: failed.map((test) => test.title),
             })}`);
           }
           NODE
