@@ -1,0 +1,100 @@
+name: Validate AI enum value normalization
+
+on:
+  push:
+    branches:
+      - validation/24274-ai-enum-values
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-24274-ai-enum-values-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+  EXPECTED_SOURCE: 4fd274f0a5d8bd419d3e3429a03b4f7a95d4ba77
+  BASE_SOURCE: d83af0410bf31b034b01757729f2231862ee5e87
+
+jobs:
+  ctb-front:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 4fd274f0a5d8bd419d3e3429a03b4f7a95d4ba77
+          fetch-depth: 8
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install pinned dependencies
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          git cat-file -e "$BASE_SOURCE^{commit}"
+          corepack enable
+          yarn install --immutable
+      - name: Build content-type-builder and workspace dependencies
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: yarn nx run @strapi/content-type-builder:build --nx-ignore-cycles --parallel=2
+      - name: Prove numeric enum regression against current develop
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=packages/core/content-type-builder/admin/src/components/AIChat/lib/transforms/schemas/toCTB.ts
+          cp "$source" /tmp/fixed-toCTB.ts
+          trap 'cp /tmp/fixed-toCTB.ts "$source"' EXIT
+          git show "$BASE_SOURCE:$source" > "$source"
+          set +e
+          yarn workspace @strapi/content-type-builder test:front --runInBand --testPathPattern=toCTB.enumeration.test.ts --testNamePattern='makes numeric-leading generated enum values' --json --outputFile=/tmp/enum-before.json
+          status=$?
+          set -e
+          test "$status" -eq 1
+          node - <<'NODE'
+          const result = require('/tmp/enum-before.json');
+          if (
+            result.numFailedTests !== 1 ||
+            result.numPassedTests !== 0 ||
+            result.numTotalTests !== 1 ||
+            result.numTotalTestSuites !== 1
+          ) {
+            throw new Error(`Unexpected baseline result: ${JSON.stringify({
+              failed: result.numFailedTests,
+              passed: result.numPassedTests,
+              total: result.numTotalTests,
+              suites: result.numTotalTestSuites,
+            })}`);
+          }
+          NODE
+          cp /tmp/fixed-toCTB.ts "$source"
+          trap - EXIT
+      - name: Run focused frontend regression test
+        run: yarn workspace @strapi/content-type-builder test:front --runInBand --testPathPattern=toCTB.enumeration.test.ts
+      - name: Run complete content-type-builder frontend suite
+        run: yarn workspace @strapi/content-type-builder test:front --runInBand
+      - name: Type-check content-type-builder frontend
+        run: yarn workspace @strapi/content-type-builder test:ts:front
+      - name: Lint content-type-builder package
+        run: yarn workspace @strapi/content-type-builder lint
+      - name: Check changed-file formatting
+        run: yarn prettier --check packages/core/content-type-builder/admin/src/components/AIChat/lib/transforms/schemas/toCTB.ts packages/core/content-type-builder/admin/src/components/AIChat/lib/transforms/schemas/tests/toCTB.enumeration.test.ts
+      - name: Verify exact source and focused diff
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          git diff --exit-code
+          git diff --cached --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          git diff --check "$BASE_SOURCE" HEAD
+          actual="$(git diff --name-only "$BASE_SOURCE" HEAD | sort)"
+          expected="$(printf '%s\n' packages/core/content-type-builder/admin/src/components/AIChat/lib/transforms/schemas/toCTB.ts packages/core/content-type-builder/admin/src/components/AIChat/lib/transforms/schemas/tests/toCTB.enumeration.test.ts | sort)"
+          test "$actual" = "$expected"
