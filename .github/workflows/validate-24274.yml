@@ -65,7 +65,7 @@ jobs:
           if (
             result.numFailedTests !== 1 ||
             result.numPassedTests !== 0 ||
-            result.numTotalTests !== 1 ||
+            result.numTotalTests !== 2 ||
             result.numTotalTestSuites !== 1
           ) {
             throw new Error(`Unexpected baseline result: ${JSON.stringify({
