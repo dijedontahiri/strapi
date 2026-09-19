@@ -1,0 +1,341 @@
+name: Validate 27722 stale release status
+
+on:
+  push:
+    branches:
+      - validate/27722-stale-release-status
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_SHA: d83af0410bf31b034b01757729f2231862ee5e87
+
+jobs:
+  validate:
+    if: github.repository == 'dijedontahiri/strapi'
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout immutable upstream source
+        uses: actions/checkout@v4
+        with:
+          repository: strapi/strapi
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 1
+
+      - name: Verify source identity
+        run: |
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test -z "$(git status --porcelain)"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: yarn
+
+      - run: corepack enable
+      - run: yarn install --immutable
+
+      - name: Add focused regression test
+        shell: bash
+        run: |
+          cat > packages/core/content-releases/server/src/services/__tests__/release-stale-status.test.ts <<'EOF'
+          import createReleaseService from '../release';
+          import {
+            RELEASE_ACTION_MODEL_UID,
+            RELEASE_MODEL_UID,
+          } from '../../constants';
+
+          const mockGetDraftEntryValidStatus = jest.fn();
+
+          jest.mock('../../utils', () => ({
+            ...jest.requireActual('../../utils'),
+            getDraftEntryValidStatus: (...args: unknown[]) => mockGetDraftEntryValidStatus(...args),
+          }));
+
+          describe('release publish stale validity status', () => {
+            beforeEach(() => {
+              jest.clearAllMocks();
+            });
+
+            const makeStrapi = ({ initialStatus, freshValid }: { initialStatus: string; freshValid: boolean }) => {
+              let releaseStatus = initialStatus;
+              let actionValid = !freshValid;
+              const publish = jest.fn().mockResolvedValue({});
+              const unpublish = jest.fn().mockResolvedValue({});
+              const action = {
+                id: 11,
+                type: 'publish',
+                contentType: 'api::article.article',
+                entryDocumentId: 'article-doc',
+                locale: 'en',
+                isEntryValid: actionValid,
+              };
+
+              mockGetDraftEntryValidStatus.mockResolvedValue(freshValid);
+
+              const actionUpdate = jest.fn(({ data }: { data: { isEntryValid: boolean } }) => {
+                actionValid = data.isEntryValid;
+                action.isEntryValid = data.isEntryValid;
+                return { ...action };
+              });
+              const releaseUpdate = jest.fn(({ data }: { data: { status?: string; releasedAt?: Date } }) => {
+                if (data.status) releaseStatus = data.status;
+                return { id: 1, name: 'September', status: releaseStatus, releasedAt: data.releasedAt ?? null };
+              });
+
+              const query = jest.fn((uid: string) => {
+                if (uid === RELEASE_ACTION_MODEL_UID) {
+                  return {
+                    findMany: jest.fn().mockImplementation(() => Promise.resolve([{ ...action }])),
+                    update: actionUpdate,
+                  };
+                }
+                if (uid === RELEASE_MODEL_UID) {
+                  return {
+                    findOne: jest.fn().mockImplementation(() =>
+                      Promise.resolve({ id: 1, name: 'September', releasedAt: null, status: releaseStatus })
+                    ),
+                    update: releaseUpdate,
+                  };
+                }
+                throw new Error(`Unexpected query ${uid}`);
+              });
+
+              const queryBuilder = jest.fn(() => {
+                const builder: any = {
+                  where: jest.fn().mockReturnThis(),
+                  select: jest.fn().mockReturnThis(),
+                  first: jest.fn().mockReturnThis(),
+                  transacting: jest.fn().mockReturnThis(),
+                  forUpdate: jest.fn().mockReturnThis(),
+                  update: jest.fn(({ status }: { status: string }) => {
+                    releaseStatus = status;
+                    return builder;
+                  }),
+                  execute: jest.fn().mockImplementation(() =>
+                    Promise.resolve({ id: 1, name: 'September', releasedAt: null, status: releaseStatus })
+                  ),
+                };
+                return builder;
+              });
+
+              const strapi: any = {
+                db: {
+                  query,
+                  queryBuilder,
+                  transaction: jest.fn(async (callback: any) => callback({ trx: {} })),
+                },
+                documents: jest.fn(() => ({ publish, unpublish })),
+                contentTypes: { 'api::article.article': {} },
+                getModel: jest.fn(() => ({
+                  options: { draftAndPublish: true },
+                  attributes: {},
+                })),
+                plugin: jest.fn((pluginName: string) => ({
+                  service: jest.fn((serviceName: string) => {
+                    if (pluginName === 'content-releases' && serviceName === 'release-action') {
+                      return {
+                        countActions: jest.fn(({ filters }: { filters: { type?: string } }) =>
+                          Promise.resolve(filters.type === 'unpublish' ? 0 : 1)
+                        ),
+                      };
+                    }
+                    return {};
+                  }),
+                })),
+                eventHub: { emit: jest.fn() },
+                telemetry: { send: jest.fn() },
+                log: { info: jest.fn(), error: jest.fn() },
+              };
+
+              return {
+                strapi,
+                publish,
+                actionUpdate,
+                releaseUpdate,
+                getReleaseStatus: () => releaseStatus,
+                getActionValid: () => actionValid,
+              };
+            };
+
+            it('revalidates a stale blocked release and publishes after the entry becomes valid', async () => {
+              const fixture = makeStrapi({ initialStatus: 'blocked', freshValid: true });
+              const service = createReleaseService({ strapi: fixture.strapi });
+
+              await service.publish(1);
+
+              expect(mockGetDraftEntryValidStatus).toHaveBeenCalledWith(
+                {
+                  contentType: 'api::article.article',
+                  documentId: 'article-doc',
+                  locale: 'en',
+                },
+                { strapi: fixture.strapi }
+              );
+              expect(fixture.actionUpdate).toHaveBeenCalledWith({
+                where: { id: 11 },
+                data: { isEntryValid: true },
+              });
+              expect(fixture.publish).toHaveBeenCalledWith({ documentId: 'article-doc', locale: 'en' });
+              expect(fixture.getActionValid()).toBe(true);
+              expect(fixture.getReleaseStatus()).toBe('done');
+            });
+
+            it('blocks a stale ready release when fresh validation fails', async () => {
+              const fixture = makeStrapi({ initialStatus: 'ready', freshValid: false });
+              const service = createReleaseService({ strapi: fixture.strapi });
+
+              await expect(service.publish(1)).rejects.toThrow('Release has invalid entries');
+
+              expect(fixture.actionUpdate).toHaveBeenCalledWith({
+                where: { id: 11 },
+                data: { isEntryValid: false },
+              });
+              expect(fixture.publish).not.toHaveBeenCalled();
+              expect(fixture.getActionValid()).toBe(false);
+              expect(fixture.getReleaseStatus()).toBe('blocked');
+            });
+          });
+          EOF
+
+      - name: Prove regression on upstream source
+        shell: bash
+        run: |
+          set +e
+          yarn workspace @strapi/content-releases test:unit --runInBand --testPathPattern=release-stale-status.test.ts > /tmp/baseline.log 2>&1
+          code=$?
+          set -e
+          cat /tmp/baseline.log
+          if [ "$code" -eq 0 ]; then
+            echo 'Regression test unexpectedly passes on upstream source'
+            exit 1
+          fi
+          grep -q "release publish stale validity status" /tmp/baseline.log
+
+      - name: Apply candidate production fix
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('packages/core/content-releases/server/src/services/release.ts')
+          text = path.read_text()
+
+          old_import = "import { getService, getPublishOrderForContentTypes } from '../utils';"
+          new_import = "import { getService, getPublishOrderForContentTypes, getDraftEntryValidStatus } from '../utils';"
+          assert old_import in text
+          text = text.replace(old_import, new_import, 1)
+
+          marker = "\n  return {\n    async create(releaseData: CreateRelease.Request['body'], { user }: { user: UserInfo }) {"
+          helper = r'''
+
+          const revalidateReleaseActions = async (releaseId: Release['id']) => {
+            const currentRelease = await strapi.db.query(RELEASE_MODEL_UID).findOne({
+              where: { id: releaseId },
+              select: ['releasedAt', 'status'],
+            });
+
+            if (!currentRelease || currentRelease.releasedAt || currentRelease.status === 'failed') {
+              return;
+            }
+
+            const actions = (await strapi.db.query(RELEASE_ACTION_MODEL_UID).findMany({
+              where: {
+                release: {
+                  id: releaseId,
+                },
+              },
+            })) as ReleaseAction[];
+
+            if (actions.length === 0) {
+              return;
+            }
+
+            let hasInvalidActions = actions.some(
+              (action) => action.type !== 'publish' && action.isEntryValid === false
+            );
+
+            for (const action of actions) {
+              if (action.type !== 'publish') {
+                continue;
+              }
+
+              const isEntryValid = await getDraftEntryValidStatus(
+                {
+                  contentType: action.contentType,
+                  documentId: action.entryDocumentId,
+                  locale: action.locale,
+                },
+                { strapi }
+              );
+
+              hasInvalidActions ||= !isEntryValid;
+
+              if (action.isEntryValid !== isEntryValid) {
+                await strapi.db.query(RELEASE_ACTION_MODEL_UID).update({
+                  where: { id: action.id },
+                  data: { isEntryValid },
+                });
+              }
+            }
+
+            const status = hasInvalidActions ? 'blocked' : 'ready';
+            if (currentRelease.status !== status) {
+              await strapi.db.query(RELEASE_MODEL_UID).update({
+                where: { id: releaseId },
+                data: { status },
+              });
+            }
+          };
+          '''
+          replacement = helper + "\n  return {\n    async create(releaseData: CreateRelease.Request['body'], { user }: { user: UserInfo }) {"
+          assert marker in text
+          text = text.replace(marker, replacement, 1)
+
+          publish_marker = "    async publish(releaseId: PublishRelease.Request['params']['id']) {\n      const {"
+          publish_replacement = "    async publish(releaseId: PublishRelease.Request['params']['id']) {\n      await revalidateReleaseActions(releaseId);\n\n      const {"
+          assert publish_marker in text
+          text = text.replace(publish_marker, publish_replacement, 1)
+
+          failed_guard = "        if (lockedRelease.status === 'failed') {\n          throw new errors.ValidationError('Release failed to publish');\n        }"
+          blocked_guard = failed_guard + "\n\n        if (lockedRelease.status === 'blocked') {\n          throw new errors.ValidationError('Release has invalid entries');\n        }"
+          assert failed_guard in text
+          text = text.replace(failed_guard, blocked_guard, 1)
+
+          path.write_text(text)
+
+      - name: Run focused regression
+        run: yarn workspace @strapi/content-releases test:unit --runInBand --testPathPattern=release-stale-status.test.ts
+
+      - name: Run content-releases unit suite
+        run: yarn workspace @strapi/content-releases test:unit --runInBand
+
+      - name: Typecheck server declarations
+        run: yarn workspace @strapi/content-releases build:types:server
+
+      - name: Lint changed package
+        run: yarn workspace @strapi/content-releases lint
+
+      - name: Check formatting
+        run: yarn prettier --check packages/core/content-releases/server/src/services/release.ts packages/core/content-releases/server/src/services/__tests__/release-stale-status.test.ts
+
+      - name: Verify only intended source changes
+        run: |
+          git status --short
+          git diff --check
+          git diff --exit-code -- . ':(exclude)packages/core/content-releases/server/src/services/release.ts' ':(exclude)packages/core/content-releases/server/src/services/__tests__/release-stale-status.test.ts'
+
+      - name: Upload exact candidate files
+        if: always() && matrix.node == 22
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-27722
+          path: |
+            packages/core/content-releases/server/src/services/release.ts
+            packages/core/content-releases/server/src/services/__tests__/release-stale-status.test.ts
+          if-no-files-found: error
