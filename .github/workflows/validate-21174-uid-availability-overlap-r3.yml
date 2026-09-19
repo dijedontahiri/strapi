@@ -1,0 +1,105 @@
+name: Validate final UID availability overlap fix
+
+on:
+  push:
+    branches:
+      - validate/21174-uid-availability-overlap-r3-20260919
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-21174-uid-availability-overlap-r3-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+  EXPECTED_SOURCE: 4055a6ca286c846a1e4fb33b2e6ccc7f8bdef54f
+  BASE_SOURCE: d83af0410bf31b034b01757729f2231862ee5e87
+
+jobs:
+  content-manager-front:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 4055a6ca286c846a1e4fb33b2e6ccc7f8bdef54f
+          fetch-depth: 8
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install pinned dependencies
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          git cat-file -e "$BASE_SOURCE^{commit}"
+          corepack enable
+          yarn install --immutable
+      - name: Build content-manager and workspace dependencies
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: yarn nx run @strapi/content-manager:build --nx-ignore-cycles --parallel=2
+      - name: Prove UID availability regression against current develop
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/UID.tsx
+          cp "$source" /tmp/fixed-uid.tsx
+          trap 'cp /tmp/fixed-uid.tsx "$source"' EXIT
+          git show "$BASE_SOURCE:$source" > "$source"
+          set +e
+          yarn workspace @strapi/content-manager test:front --runInBand --testPathPattern=UID.test.tsx -t 'reserves space for availability feedback and truncates long UID values' --json --outputFile=/tmp/uid-overlap-before.json
+          status=$?
+          set -e
+          test "$status" -eq 1
+          node - <<'NODE'
+          const result = require('/tmp/uid-overlap-before.json');
+          const failed = result.testResults.flatMap((suite) =>
+            suite.assertionResults.filter((test) => test.status === 'failed')
+          );
+          if (
+            result.numFailedTests !== 1 ||
+            result.numPassedTests !== 0 ||
+            result.numTotalTestSuites !== 1 ||
+            failed.length !== 1 ||
+            failed[0].title !== 'reserves space for availability feedback and truncates long UID values'
+          ) {
+            throw new Error(`Unexpected baseline result: ${JSON.stringify({
+              failed: result.numFailedTests,
+              passed: result.numPassedTests,
+              total: result.numTotalTests,
+              suites: result.numTotalTestSuites,
+              failedTitles: failed.map((test) => test.title),
+            })}`);
+          }
+          NODE
+          cp /tmp/fixed-uid.tsx "$source"
+          trap - EXIT
+      - name: Run focused UID frontend regression tests
+        run: yarn workspace @strapi/content-manager test:front --runInBand --testPathPattern=UID.test.tsx
+      - name: Run complete content-manager frontend suite
+        run: yarn workspace @strapi/content-manager test:front --runInBand
+      - name: Type-check content-manager frontend
+        run: yarn workspace @strapi/content-manager test:ts:front
+      - name: Lint content-manager package
+        run: yarn workspace @strapi/content-manager lint
+      - name: Check changed-file formatting
+        run: yarn prettier --check packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/UID.tsx packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/tests/UID.test.tsx
+      - name: Verify exact source and focused diff
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          git diff --exit-code
+          git diff --cached --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          git diff --check "$BASE_SOURCE" HEAD
+          actual="$(git diff --name-only "$BASE_SOURCE" HEAD | sort)"
+          expected="$(printf '%s\n' packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/UID.tsx packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/tests/UID.test.tsx | sort)"
+          test "$actual" = "$expected"
