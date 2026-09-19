@@ -1,0 +1,75 @@
+name: Apply 27722 candidate
+
+on:
+  push:
+    branches:
+      - automation/27722-apply
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/27722-revalidate-release-actions
+          fetch-depth: 0
+      - name: Apply focused source and regression changes
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          release_path = Path('packages/core/content-releases/server/src/services/release.ts')
+          source = release_path.read_text()
+
+          old_import = "import { getService, getPublishOrderForContentTypes } from '../utils';"
+          new_import = "import { getService, getPublishOrderForContentTypes, getDraftEntryValidStatus } from '../utils';"
+          assert source.count(old_import) == 1
+          source = source.replace(old_import, new_import)
+
+          old_helper_anchor = """    return formattedActions;\n  };\n\n  return {\n"""
+          new_helper_anchor = """    return formattedActions;\n  };\n\n  const validatePublishActions = async (releaseId: Release['id']) => {\n    const actions = (await strapi.db.query(RELEASE_ACTION_MODEL_UID).findMany({\n      where: {\n        release: {\n          id: releaseId,\n        },\n        type: 'publish',\n      },\n    })) as ReleaseAction[];\n\n    const validity = await Promise.all(\n      actions.map((action) =>\n        getDraftEntryValidStatus(\n          {\n            contentType: action.contentType,\n            documentId: action.entryDocumentId,\n            locale: action.locale,\n          },\n          { strapi }\n        )\n      )\n    );\n\n    if (validity.some((isValid) => !isValid)) {\n      throw new errors.ValidationError('Release is blocked');\n    }\n  };\n\n  return {\n"""
+          assert source.count(old_helper_anchor) == 1
+          source = source.replace(old_helper_anchor, new_helper_anchor)
+
+          old_publish_anchor = """        if (lockedRelease.status === 'failed') {\n          throw new errors.ValidationError('Release failed to publish');\n        }\n\n        try {\n"""
+          new_publish_anchor = """        if (lockedRelease.status === 'failed') {\n          throw new errors.ValidationError('Release failed to publish');\n        }\n\n        // Release action validity is cached for the admin UI and can become stale when\n        // content changes outside the document-service middleware. Revalidate immediately\n        // before publishing so the publish decision reflects the current entries.\n        await validatePublishActions(releaseId);\n\n        try {\n"""
+          assert source.count(old_publish_anchor) == 1
+          source = source.replace(old_publish_anchor, new_publish_anchor)
+          release_path.write_text(source)
+
+          test_path = Path('packages/core/content-releases/server/src/services/__tests__/release.test.ts')
+          tests = test_path.read_text()
+
+          old_imports = """import createReleaseService from '../release';\nimport releaseCT from '../../content-types/release/schema';\n"""
+          new_imports = """import createReleaseService from '../release';\nimport releaseCT from '../../content-types/release/schema';\nimport { getDraftEntryValidStatus } from '../../utils';\n\njest.mock('../../utils', () => ({\n  ...jest.requireActual('../../utils'),\n  getDraftEntryValidStatus: jest.fn(),\n}));\n\nconst mockGetDraftEntryValidStatus = jest.mocked(getDraftEntryValidStatus);\n"""
+          assert tests.count(old_imports) == 1
+          tests = tests.replace(old_imports, new_imports)
+
+          old_describe = """  describe('publish', () => {\n    it('throws an error if the release does not exist', () => {\n"""
+          new_describe = """  describe('publish', () => {\n    beforeEach(() => {\n      jest.clearAllMocks();\n      mockGetDraftEntryValidStatus.mockResolvedValue(true);\n    });\n\n    it('throws an error if the release does not exist', () => {\n"""
+          assert tests.count(old_describe) == 1
+          tests = tests.replace(old_describe, new_describe)
+
+          marker = """    it('throws an error if the release have 0 actions', () => {\n"""
+          regression = """    it('revalidates publish actions and blocks entries that are currently invalid', async () => {\n      mockExecute.mockReturnValueOnce({\n        id: 1,\n        name: 'Release',\n        releasedAt: null,\n        status: 'ready',\n      });\n      mockGetDraftEntryValidStatus.mockResolvedValueOnce(false);\n\n      const action = {\n        contentType: 'api::contentTypeA.contentTypeA',\n        type: 'publish',\n        entryDocumentId: 'doc1',\n        locale: 'en',\n      };\n\n      const strapiMock = {\n        ...baseStrapiMock,\n        db: {\n          ...baseStrapiMock.db,\n          query: jest.fn().mockReturnValue({\n            findMany: jest.fn().mockResolvedValue([action]),\n            update: jest.fn(),\n          }),\n        },\n      };\n\n      // @ts-expect-error Ignore missing properties\n      const releaseService = createReleaseService({ strapi: strapiMock });\n\n      await expect(releaseService.publish(1)).rejects.toThrow('Release is blocked');\n\n      expect(mockGetDraftEntryValidStatus).toHaveBeenCalledWith(\n        {\n          contentType: action.contentType,\n          documentId: action.entryDocumentId,\n          locale: action.locale,\n        },\n        { strapi: strapiMock }\n      );\n      expect(mockPublish).not.toHaveBeenCalled();\n    });\n\n    it('publishes a stale blocked release when its entries are currently valid', async () => {\n      mockExecute.mockReturnValueOnce({\n        id: 1,\n        name: 'Release',\n        releasedAt: null,\n        status: 'blocked',\n      });\n      mockGetDraftEntryValidStatus.mockResolvedValueOnce(true);\n\n      const action = {\n        contentType: 'api::contentTypeA.contentTypeA',\n        type: 'publish',\n        entryDocumentId: 'doc1',\n        locale: 'en',\n      };\n\n      const strapiMock = {\n        ...baseStrapiMock,\n        db: {\n          ...baseStrapiMock.db,\n          query: jest.fn().mockImplementation((modelUid: string) => {\n            if (modelUid === 'plugin::content-releases.release-action') {\n              return {\n                findMany: jest.fn().mockResolvedValue([action]),\n              };\n            }\n\n            return {\n              update: jest.fn().mockResolvedValue({\n                id: 1,\n                name: 'Release',\n                status: 'done',\n                releasedAt: new Date(),\n              }),\n            };\n          }),\n        },\n      };\n\n      // @ts-expect-error Ignore missing properties\n      const releaseService = createReleaseService({ strapi: strapiMock });\n\n      await releaseService.publish(1);\n\n      expect(mockGetDraftEntryValidStatus).toHaveBeenCalledWith(\n        {\n          contentType: action.contentType,\n          documentId: action.entryDocumentId,\n          locale: action.locale,\n        },\n        { strapi: strapiMock }\n      );\n      expect(mockPublish).toHaveBeenCalledWith({ documentId: 'doc1', locale: 'en' });\n    });\n\n"""
+          assert tests.count(marker) == 1
+          tests = tests.replace(marker, regression + marker)
+          test_path.write_text(tests)
+          PY
+
+          git diff --check
+          git diff -- packages/core/content-releases/server/src/services/release.ts packages/core/content-releases/server/src/services/__tests__/release.test.ts
+      - name: Commit and push exact candidate
+        shell: bash
+        run: |
+          git config user.name 'dijedontahiri'
+          git config user.email '99071957+dijedontahiri@users.noreply.github.com'
+          git add packages/core/content-releases/server/src/services/release.ts packages/core/content-releases/server/src/services/__tests__/release.test.ts
+          git commit -m 'fix(content-releases): revalidate entries before publishing'
+          git push origin HEAD:fix/27722-revalidate-release-actions
