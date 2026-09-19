@@ -50,23 +50,31 @@ jobs:
           cache-dependency-path: source/yarn.lock
 
       - name: Enable Corepack
-        run: |
-          corepack enable
+        run: corepack enable
 
       - name: Install dependencies
         run: |
           cd source
           yarn install --immutable
 
-      - name: Build runtime and declaration workspace dependencies
+      - name: Build runtime, declaration, and lint workspace dependencies
         run: |
           cd source
-          yarn nx run-many --targets=build --projects=@strapi/admin,@strapi/types,@strapi/utils,@strapi/database --nx-ignore-cycles --parallel=3
+          yarn nx run-many --targets=build --projects=@strapi/admin,@strapi/content-manager,@strapi/types,@strapi/utils,@strapi/database --nx-ignore-cycles --parallel=3
 
       - name: Add baseline regression tests
         run: |
           cd source
           python ../harness/.github/validation/validate_27722.py tests
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('packages/core/content-releases/server/src/services/__tests__/release-stale-status.test.ts')
+          s = p.read_text()
+          old = "transaction: jest.fn(async (callback: any) => callback({ trx: {} })),"
+          new = "transaction: jest.fn(async (fn: any) => fn({ trx: {} })),"
+          assert old in s
+          p.write_text(s.replace(old, new, 1))
+          PY
 
       - name: Prove regression on upstream source
         shell: bash
@@ -88,6 +96,15 @@ jobs:
         run: |
           cd source
           python ../harness/.github/validation/validate_27722.py candidate
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('packages/core/content-releases/server/src/services/__tests__/release-stale-status.test.ts')
+          s = p.read_text()
+          old = "transaction: jest.fn(async (callback: any) => callback({ trx: {} })),"
+          new = "transaction: jest.fn(async (fn: any) => fn({ trx: {} })),"
+          if old in s:
+              p.write_text(s.replace(old, new, 1))
+          PY
 
       - name: Run focused regressions
         run: |
@@ -130,7 +147,7 @@ jobs:
         if: always() && matrix.node == 22
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-27722-v2
+          name: candidate-27722-v3
           path: |
             source/packages/core/content-releases/server/src/services/release.ts
             source/packages/core/content-releases/server/src/services/release-action.ts
