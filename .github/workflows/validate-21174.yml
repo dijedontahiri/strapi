@@ -1,0 +1,71 @@
+name: Validate #21174 UID overlap
+
+on:
+  push:
+    branches:
+      - validate/21174-uid-overlap-20260920
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: 4055a6ca286c846a1e4fb33b2e6ccc7f8bdef54f
+          fetch-depth: 0
+      - name: Setup Node ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: yarn
+      - name: Enable Corepack
+        run: corepack enable
+      - name: Install dependencies
+        run: yarn install --immutable
+      - name: Verify exact candidate
+        run: test "$(git rev-parse HEAD)" = "4055a6ca286c846a1e4fb33b2e6ccc7f8bdef54f"
+      - name: Prove baseline regression fails
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          set -euo pipefail
+          TEST_PATH='packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/tests/UID.test.tsx'
+          cp "$TEST_PATH" /tmp/UID.test.tsx
+          git checkout d83af0410bf31b034b01757729f2231862ee5e87 -- packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/UID.tsx
+          cp /tmp/UID.test.tsx "$TEST_PATH"
+          set +e
+          yarn workspace @strapi/content-manager test:front --runInBand "$TEST_PATH" -t 'reserves space for availability feedback and truncates long UID values'
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo 'Baseline unexpectedly passed regression'
+            exit 1
+          fi
+          git checkout 4055a6ca286c846a1e4fb33b2e6ccc7f8bdef54f -- packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/UID.tsx "$TEST_PATH"
+      - name: Focused regression
+        run: yarn workspace @strapi/content-manager test:front --runInBand packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/tests/UID.test.tsx -t 'reserves space for availability feedback and truncates long UID values'
+      - name: Content Manager frontend tests
+        if: matrix.node == 22
+        run: yarn workspace @strapi/content-manager test:front --runInBand
+      - name: Content Manager TypeScript
+        run: yarn workspace @strapi/content-manager test:ts:front
+      - name: ESLint affected files
+        if: matrix.node == 22
+        run: yarn eslint packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/UID.tsx packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/tests/UID.test.tsx --max-warnings=0
+      - name: Prettier affected files
+        if: matrix.node == 22
+        run: yarn prettier --check packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/UID.tsx packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/tests/UID.test.tsx
+      - name: Verify clean candidate tree
+        run: |
+          test "$(git rev-parse HEAD)" = "4055a6ca286c846a1e4fb33b2e6ccc7f8bdef54f"
+          test -z "$(git status --porcelain)"
