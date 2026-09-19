@@ -12,7 +12,8 @@ env:
   CI: 'true'
   NX_DAEMON: 'false'
   STRAPI_TELEMETRY_DISABLED: 'true'
-  SOURCE: 5c1a9b09d9835e73e654c713df486bff385a6683
+  SOURCE: 9306e9aa3be319e7a5eac6f24198ff9c5a5a58d1
+  REVIEW_BASE: 5c1a9b09d9835e73e654c713df486bff385a6683
   BASE: d83af0410bf31b034b01757729f2231862ee5e87
   TEST_FILE: packages/core/data-transfer/src/strapi/remote/handlers/__tests__/utils-lifecycle.vitest.test.ts
   SOURCE_FILE: packages/core/data-transfer/src/strapi/remote/handlers/utils.ts
@@ -29,8 +30,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 5c1a9b09d9835e73e654c713df486bff385a6683
-          fetch-depth: 5
+          ref: 9306e9aa3be319e7a5eac6f24198ff9c5a5a58d1
+          fetch-depth: 8
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
@@ -40,30 +41,31 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$SOURCE"
           git cat-file -e "$BASE^{commit}"
+          git cat-file -e "$REVIEW_BASE^{commit}"
           corepack enable
           yarn install --immutable
           yarn nx run @strapi/data-transfer:build --nx-ignore-cycles --parallel=2
-      - name: Prove the regressions against current develop
+      - name: Prove the review regression against the previous PR head
         if: matrix.node == 22
         shell: bash
         run: |
           set -euo pipefail
           cp "$SOURCE_FILE" /tmp/fixed-utils.ts
           trap 'cp /tmp/fixed-utils.ts "$SOURCE_FILE"' EXIT
-          git show "$BASE:$SOURCE_FILE" > "$SOURCE_FILE"
+          git show "$REVIEW_BASE:$SOURCE_FILE" > "$SOURCE_FILE"
           set +e
-          yarn workspace @strapi/data-transfer test:unit:vitest src/strapi/remote/handlers/__tests__/utils-lifecycle.vitest.test.ts --retry=0 > /tmp/baseline.log 2>&1
+          yarn workspace @strapi/data-transfer test:unit:vitest src/strapi/remote/handlers/__tests__/utils-lifecycle.vitest.test.ts --retry=0 > /tmp/review-base.log 2>&1
           status=$?
           set -e
-          cat /tmp/baseline.log
+          cat /tmp/review-base.log
           test "$status" -ne 0
           python3 - <<'PY'
           from pathlib import Path
           import re
-          text = Path('/tmp/baseline.log').read_text()
+          text = Path('/tmp/review-base.log').read_text()
           text = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', text)
-          assert 'strapi is not defined' in text, text[-10000:]
-          assert re.search(r'Tests\s+3 failed\s*\|\s*1 passed\s*\(4\)', text), text[-10000:]
+          assert 'restores the replacement server own timeout snapshot after overlapping connections' in text, text[-12000:]
+          assert re.search(r'Tests\s+1 failed\s*\|\s*4 passed\s*\(5\)', text), text[-12000:]
           PY
           cp /tmp/fixed-utils.ts "$SOURCE_FILE"
           trap - EXIT
