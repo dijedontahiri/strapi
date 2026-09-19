@@ -298,10 +298,34 @@ def apply_candidate() -> None:
 
     test_path = TESTS / 'release.test.ts'
     test = test_path.read_text()
-    count_line = "      countActions: jest.fn(),"
-    replacement = count_line + "\n      validateActionsByRelease: jest.fn().mockResolvedValue(true),"
-    assert count_line in test
-    test_path.write_text(test.replace(count_line, replacement, 1))
+
+    base_count_line = "      countActions: jest.fn(),"
+    base_replacement = base_count_line + "\n      validateActionsByRelease: jest.fn().mockResolvedValue(true),"
+    assert base_count_line in test
+    test = test.replace(base_count_line, base_replacement, 1)
+
+    multi_line_service = "          service: jest.fn().mockReturnValue({\n            countActions:"
+    multi_line_replacement = (
+        "          service: jest.fn().mockReturnValue({\n"
+        "            validateActionsByRelease: jest.fn().mockResolvedValue(true),\n"
+        "            countActions:"
+    )
+    assert test.count(multi_line_service) == 2
+    test = test.replace(multi_line_service, multi_line_replacement)
+
+    single_line_service = (
+        "          service: jest.fn().mockReturnValue({ countActions: jest.fn().mockResolvedValue(1) }),"
+    )
+    single_line_replacement = (
+        "          service: jest.fn().mockReturnValue({\n"
+        "            validateActionsByRelease: jest.fn().mockResolvedValue(true),\n"
+        "            countActions: jest.fn().mockResolvedValue(1),\n"
+        "          }),"
+    )
+    assert single_line_service in test
+    test = test.replace(single_line_service, single_line_replacement, 1)
+
+    test_path.write_text(test)
 
 
 if __name__ == '__main__':
