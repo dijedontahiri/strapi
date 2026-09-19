@@ -8,11 +8,15 @@ on:
 permissions:
   contents: read
 
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+
 jobs:
   validate:
     if: github.repository == 'dijedontahiri/strapi'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -34,24 +38,36 @@ jobs:
         run: yarn install --immutable
       - name: Verify exact candidate
         run: test "$(git rev-parse HEAD)" = "0c4ecbfa1b3839c594fed4529a648cce95c6a95b"
-      - name: Prove baseline regression fails
+      - name: Build Content Type Builder and workspace dependencies
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: yarn nx run @strapi/content-type-builder:build --nx-ignore-cycles --parallel=2
+      - name: Prove baseline regression fails for the intended assertion
         if: matrix.node == 22
         shell: bash
         run: |
           set -euo pipefail
           TEST_PATH='packages/core/content-type-builder/admin/src/components/AIChat/lib/transforms/schemas/tests/toCTB.enumeration.test.ts'
-          cp "$TEST_PATH" /tmp/toCTB.enumeration.test.ts
-          git checkout d83af0410bf31b034b01757729f2231862ee5e87 -- packages/core/content-type-builder/admin/src/components/AIChat/lib/transforms/schemas/toCTB.ts
-          cp /tmp/toCTB.enumeration.test.ts "$TEST_PATH"
+          SOURCE_PATH='packages/core/content-type-builder/admin/src/components/AIChat/lib/transforms/schemas/toCTB.ts'
+          cp "$SOURCE_PATH" /tmp/toCTB.ts
+          trap 'cp /tmp/toCTB.ts "$SOURCE_PATH"' EXIT
+          git show d83af0410bf31b034b01757729f2231862ee5e87:"$SOURCE_PATH" > "$SOURCE_PATH"
           set +e
-          yarn workspace @strapi/content-type-builder test:front --runInBand "$TEST_PATH"
+          yarn workspace @strapi/content-type-builder test:front --runInBand "$TEST_PATH" --json --outputFile=/tmp/enum-before.json
           status=$?
           set -e
-          if [ "$status" -eq 0 ]; then
-            echo 'Baseline unexpectedly passed regression'
-            exit 1
-          fi
-          git checkout 0c4ecbfa1b3839c594fed4529a648cce95c6a95b -- packages/core/content-type-builder/admin/src/components/AIChat/lib/transforms/schemas/toCTB.ts "$TEST_PATH"
+          test "$status" -eq 1
+          node - <<'NODE'
+          const result = require('/tmp/enum-before.json');
+          const failed = result.testResults.flatMap((suite) =>
+            suite.assertionResults.filter((test) => test.status === 'failed')
+          );
+          if (result.numFailedTests !== 1 || failed.length !== 1 || !failed[0].title.includes('makes numeric-leading generated enum values')) {
+            throw new Error(`Unexpected baseline result: ${JSON.stringify({ failed: result.numFailedTests, failedTitles: failed.map((test) => test.title) })}`);
+          }
+          NODE
+          cp /tmp/toCTB.ts "$SOURCE_PATH"
+          trap - EXIT
       - name: Focused regression
         run: yarn workspace @strapi/content-type-builder test:front --runInBand packages/core/content-type-builder/admin/src/components/AIChat/lib/transforms/schemas/tests/toCTB.enumeration.test.ts
       - name: Content Type Builder frontend tests
@@ -68,4 +84,9 @@ jobs:
       - name: Verify clean candidate tree
         run: |
           test "$(git rev-parse HEAD)" = "0c4ecbfa1b3839c594fed4529a648cce95c6a95b"
-          test -z "$(git status --porcelain)"
+          git diff --exit-code
+          git diff --cached --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          actual="$(git diff --name-only d83af0410bf31b034b01757729f2231862ee5e87 HEAD | sort)"
+          expected="$(printf '%s\n' packages/core/content-type-builder/admin/src/components/AIChat/lib/transforms/schemas/toCTB.ts packages/core/content-type-builder/admin/src/components/AIChat/lib/transforms/schemas/tests/toCTB.enumeration.test.ts | sort)"
+          test "$actual" = "$expected"
