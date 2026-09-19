@@ -1,4 +1,4 @@
-name: Apply 27722 candidate
+name: Repair 27722 review findings
 
 on:
   push:
@@ -9,26 +9,367 @@ permissions:
   contents: write
 
 jobs:
-  apply:
+  repair:
     if: github.repository == 'dijedontahiri/strapi'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
           ref: fix/27722-revalidate-release-actions
           fetch-depth: 0
-      - name: Repair candidate after full-suite validation
+
+      - name: Verify candidate head before repair
         shell: bash
         run: |
-          echo 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCgpyZWxlYXNlX3BhdGggPSBQYXRoKCJwYWNrYWdlcy9jb3JlL2NvbnRlbnQtcmVsZWFzZXMvc2VydmVyL3NyYy9zZXJ2aWNlcy9yZWxlYXNlLnRzIikKc291cmNlID0gcmVsZWFzZV9wYXRoLnJlYWRfdGV4dCgpCm9sZCA9ICIiIiAgICAgICAgLy8gUmVsZWFzZSBhY3Rpb24gdmFsaWRpdHkgaXMgY2FjaGVkIGZvciB0aGUgYWRtaW4gVUkgYW5kIGNhbiBiZWNvbWUgc3RhbGUgd2hlbgogICAgICAgIC8vIGNvbnRlbnQgY2hhbmdlcyBvdXRzaWRlIHRoZSBkb2N1bWVudC1zZXJ2aWNlIG1pZGRsZXdhcmUuIFJldmFsaWRhdGUgaW1tZWRpYXRlbHkKICAgICAgICAvLyBiZWZvcmUgcHVibGlzaGluZyBzbyB0aGUgcHVibGlzaCBkZWNpc2lvbiByZWZsZWN0cyB0aGUgY3VycmVudCBlbnRyaWVzLgogICAgICAgIGF3YWl0IHZhbGlkYXRlUHVibGlzaEFjdGlvbnMocmVsZWFzZUlkKTsKCiAgICAgICAgdHJ5IHsKICAgICAgICAgIHN0cmFwaS5sb2cuaW5mbyhgW0NvbnRlbnQgUmVsZWFzZXNdIFN0YXJ0aW5nIHRvIHB1Ymxpc2ggcmVsZWFzZSAke2xvY2tlZFJlbGVhc2UubmFtZX1gKTsKIiIiCm5ldyA9ICIiIiAgICAgICAgdHJ5IHsKICAgICAgICAgIC8vIFJlbGVhc2UgYWN0aW9uIHZhbGlkaXR5IGlzIGNhY2hlZCBmb3IgdGhlIGFkbWluIFVJIGFuZCBjYW4gYmVjb21lIHN0YWxlIHdoZW4KICAgICAgICAgIC8vIGNvbnRlbnQgY2hhbmdlcyBvdXRzaWRlIHRoZSBkb2N1bWVudC1zZXJ2aWNlIG1pZGRsZXdhcmUuIFJldmFsaWRhdGUgaW1tZWRpYXRlbHkKICAgICAgICAgIC8vIGJlZm9yZSBwdWJsaXNoaW5nIHNvIHRoZSBwdWJsaXNoIGRlY2lzaW9uIHJlZmxlY3RzIHRoZSBjdXJyZW50IGVudHJpZXMuCiAgICAgICAgICBhd2FpdCB2YWxpZGF0ZVB1Ymxpc2hBY3Rpb25zKHJlbGVhc2VJZCk7CgogICAgICAgICAgc3RyYXBpLmxvZy5pbmZvKGBbQ29udGVudCBSZWxlYXNlc10gU3RhcnRpbmcgdG8gcHVibGlzaCByZWxlYXNlICR7bG9ja2VkUmVsZWFzZS5uYW1lfWApOwoiIiIKYXNzZXJ0IHNvdXJjZS5jb3VudChvbGQpID09IDEKc291cmNlID0gc291cmNlLnJlcGxhY2Uob2xkLCBuZXcpCm9sZCA9ICIiIiAgICAgICAgfSBjYXRjaCAoZXJyb3IpIHsKICAgICAgICAgIGRpc3BhdGNoV2ViaG9vayhBTExPV0VEX1dFQkhPT0tfRVZFTlRTLlJFTEVBU0VTX1BVQkxJU0gsIHsKIiIiCm5ldyA9ICIiIiAgICAgICAgfSBjYXRjaCAoZXJyb3IpIHsKICAgICAgICAgIC8vIEEgZnJlc2ggY29udGVudCB2YWxpZGF0aW9uIGZhaWx1cmUgaXMgYSBwcmUtZmxpZ2h0IHJlamVjdGlvbiwgbm90IGEgZmFpbGVkCiAgICAgICAgICAvLyBwdWJsaXNoIGF0dGVtcHQuIFRocm93aW5nIHJvbGxzIGJhY2sgdGhlIGxvY2tpbmcgdHJhbnNhY3Rpb24gd2l0aG91dCBjaGFuZ2luZwogICAgICAgICAgLy8gdGhlIHJlbGVhc2Ugc3RhdHVzIG9yIGVtaXR0aW5nIGEgcHVibGlzaC1mYWlsdXJlIHdlYmhvb2svYXVkaXQgZW50cnkuCiAgICAgICAgICBpZiAoZXJyb3IgaW5zdGFuY2VvZiBlcnJvcnMuVmFsaWRhdGlvbkVycm9yICYmIGVycm9yLm1lc3NhZ2UgPT09ICdSZWxlYXNlIGlzIGJsb2NrZWQnKSB7CiAgICAgICAgICAgIHRocm93IGVycm9yOwogICAgICAgICAgfQoKICAgICAgICAgIGRpc3BhdGNoV2ViaG9vayhBTExPV0VEX1dFQkhPT0tfRVZFTlRTLlJFTEVBU0VTX1BVQkxJU0gsIHsKIiIiCmFzc2VydCBzb3VyY2UuY291bnQob2xkKSA9PSAxCnNvdXJjZSA9IHNvdXJjZS5yZXBsYWNlKG9sZCwgbmV3KQpyZWxlYXNlX3BhdGgud3JpdGVfdGV4dChzb3VyY2UpCgp0ZXN0X3BhdGggPSBQYXRoKCJwYWNrYWdlcy9jb3JlL2NvbnRlbnQtcmVsZWFzZXMvc2VydmVyL3NyYy9zZXJ2aWNlcy9fX3Rlc3RzX18vcmVsZWFzZS50ZXN0LnRzIikKdGVzdHMgPSB0ZXN0X3BhdGgucmVhZF90ZXh0KCkKb2xkID0gIiIiICAgICAgZm9yIChsZXQgaSA9IDA7IGkgPCA1OyBpICs9IDEpIHsKICAgICAgICBhd2FpdCBQcm9taXNlLnJlc29sdmUoKTsKICAgICAgfQoKICAgICAgZXhwZWN0KGNhbGxPcmRlcikudG9FcXVhbChbJ2NhbGw6cGFyZW50RG9jJ10pOwoiIiIKbmV3ID0gIiIiICAgICAgLy8gRnJlc2ggcmVsZWFzZS1hY3Rpb24gdmFsaWRhdGlvbiBhZGRzIGJvdW5kZWQgYXN5bmMgcHJlZmxpZ2h0IHdvcmsgYmVmb3JlCiAgICAgIC8vIGRvY3VtZW50IHB1Ymxpc2hpbmcgYmVnaW5zLiBXYWl0IGZvciB0aGF0IHByZWZsaWdodCB3aXRob3V0IHdlYWtlbmluZyB0aGUKICAgICAgLy8gc2VxdWVudGlhbGl0eSBhc3NlcnRpb24gYmVsb3cuCiAgICAgIGZvciAobGV0IGkgPSAwOyBpIDwgMjAgJiYgY2FsbE9yZGVyLmxlbmd0aCA9PT0gMDsgaSArPSAxKSB7CiAgICAgICAgYXdhaXQgUHJvbWlzZS5yZXNvbHZlKCk7CiAgICAgIH0KCiAgICAgIGV4cGVjdChjYWxsT3JkZXIpLnRvRXF1YWwoWydjYWxsOnBhcmVudERvYyddKTsKIiIiCmFzc2VydCB0ZXN0cy5jb3VudChvbGQpID09IDEKdGVzdHMgPSB0ZXN0cy5yZXBsYWNlKG9sZCwgbmV3KQp0ZXN0X3BhdGgud3JpdGVfdGV4dCh0ZXN0cykK' | base64 -d > /tmp/repair.py
-          python3 /tmp/repair.py
+          test "$(git rev-parse HEAD)" = "5d45cdc811d3ed3b0f2e337cc1aa10f0c604602b"
+          git status --porcelain=v1
+          test -z "$(git status --porcelain=v1)"
+
+      - name: Add review regressions
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path("packages/core/content-releases/server/src/services/__tests__/release.test.ts")
+          source = path.read_text()
+
+          source = source.replace(
+              "import { queryParams } from '@strapi/utils';",
+              "import { emitAudit, queryParams } from '@strapi/utils';",
+              1,
+          )
+
+          utils_mock = """jest.mock('@strapi/utils', () => ({
+            ...jest.requireActual('@strapi/utils'),
+            emitAudit: jest.fn(),
+          }));
+
+          """
+          marker = "jest.mock('../../utils', () => ({"
+          if utils_mock not in source:
+              source = source.replace(marker, utils_mock + marker, 1)
+
+          source = source.replace(
+              "const mockGetDraftEntryValidStatus = jest.mocked(getDraftEntryValidStatus);",
+              "const mockEmitAudit = jest.mocked(emitAudit);\nconst mockGetDraftEntryValidStatus = jest.mocked(getDraftEntryValidStatus);",
+              1,
+          )
+
+          invalid_start = source.index(
+              "    it('revalidates publish actions and blocks entries that are currently invalid', async () => {"
+          )
+          invalid_end = source.index(
+              "\n\n    it('publishes a stale blocked release when its entries are currently valid', async () => {",
+              invalid_start,
+          )
+          invalid_test = """    it('revalidates publish actions and blocks entries that are currently invalid', async () => {
+                mockExecute.mockReturnValueOnce({
+                  id: 1,
+                  name: 'Release',
+                  releasedAt: null,
+                  status: 'ready',
+                });
+                mockGetDraftEntryValidStatus.mockResolvedValueOnce(false);
+
+                const action = {
+                  contentType: 'api::contentTypeA.contentTypeA',
+                  type: 'publish',
+                  entryDocumentId: 'doc1',
+                  locale: 'en',
+                };
+
+                const rollback = jest.fn();
+                const releaseUpdate = jest.fn();
+                const emit = jest.fn();
+                const transaction = jest.fn().mockImplementation(async (fn) => {
+                  if (!fn) {
+                    return { commit: jest.fn(), get: jest.fn() };
+                  }
+
+                  try {
+                    return await fn({ trx: jest.fn() });
+                  } catch (error) {
+                    rollback();
+                    throw error;
+                  }
+                });
+
+                const strapiMock = {
+                  ...baseStrapiMock,
+                  eventHub: { emit },
+                  db: {
+                    ...baseStrapiMock.db,
+                    transaction,
+                    query: jest.fn().mockImplementation((modelUid: string) => {
+                      if (modelUid === 'plugin::content-releases.release-action') {
+                        return {
+                          findMany: jest.fn().mockResolvedValue([action]),
+                        };
+                      }
+
+                      return {
+                        update: releaseUpdate,
+                      };
+                    }),
+                  },
+                };
+
+                // @ts-expect-error Ignore missing properties
+                const releaseService = createReleaseService({ strapi: strapiMock });
+
+                await expect(releaseService.publish(1)).rejects.toThrow('Release is blocked');
+
+                expect(mockGetDraftEntryValidStatus).toHaveBeenCalledWith(
+                  {
+                    contentType: action.contentType,
+                    documentId: action.entryDocumentId,
+                    locale: action.locale,
+                  },
+                  { strapi: strapiMock }
+                );
+                expect(transaction).toHaveBeenCalledTimes(1);
+                expect(rollback).toHaveBeenCalledTimes(1);
+                expect(mockPublish).not.toHaveBeenCalled();
+                expect(releaseUpdate).not.toHaveBeenCalled();
+                expect(emit).not.toHaveBeenCalled();
+                expect(mockEmitAudit).not.toHaveBeenCalled();
+              });"""
+          source = source[:invalid_start] + invalid_test + source[invalid_end:]
+
+          snapshot_start = source.index(
+              "    it('publishes a stale blocked release when its entries are currently valid', async () => {"
+          )
+          snapshot_end = source.index(
+              "\n\n    it('throws an error if the release have 0 actions', () => {",
+              snapshot_start,
+          )
+          snapshot_test = """    it('publishes the exact release-action snapshot that was revalidated', async () => {
+                mockExecute.mockReturnValueOnce({
+                  id: 1,
+                  name: 'Release',
+                  releasedAt: null,
+                  status: 'blocked',
+                });
+                mockGetDraftEntryValidStatus.mockResolvedValueOnce(true);
+
+                const validatedAction = {
+                  contentType: 'api::contentTypeA.contentTypeA',
+                  type: 'publish',
+                  entryDocumentId: 'doc1',
+                  locale: 'en',
+                };
+                const laterAction = {
+                  contentType: 'api::contentTypeA.contentTypeA',
+                  type: 'publish',
+                  entryDocumentId: 'doc2',
+                  locale: 'en',
+                };
+                const findMany = jest
+                  .fn()
+                  .mockResolvedValueOnce([validatedAction])
+                  .mockResolvedValueOnce([laterAction]);
+
+                const strapiMock = {
+                  ...baseStrapiMock,
+                  db: {
+                    ...baseStrapiMock.db,
+                    query: jest.fn().mockImplementation((modelUid: string) => {
+                      if (modelUid === 'plugin::content-releases.release-action') {
+                        return { findMany };
+                      }
+
+                      return {
+                        update: jest.fn().mockResolvedValue({
+                          id: 1,
+                          name: 'Release',
+                          status: 'done',
+                          releasedAt: new Date(),
+                        }),
+                      };
+                    }),
+                  },
+                };
+
+                // @ts-expect-error Ignore missing properties
+                const releaseService = createReleaseService({ strapi: strapiMock });
+
+                await releaseService.publish(1);
+
+                expect(findMany).toHaveBeenCalledTimes(1);
+                expect(mockGetDraftEntryValidStatus).toHaveBeenCalledWith(
+                  {
+                    contentType: validatedAction.contentType,
+                    documentId: validatedAction.entryDocumentId,
+                    locale: validatedAction.locale,
+                  },
+                  { strapi: strapiMock }
+                );
+                expect(mockPublish).toHaveBeenCalledWith({ documentId: 'doc1', locale: 'en' });
+                expect(mockPublish).not.toHaveBeenCalledWith({ documentId: 'doc2', locale: 'en' });
+              });"""
+          source = source[:snapshot_start] + snapshot_test + source[snapshot_end:]
+
+          path.write_text(source)
+          PY
           git diff --check
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      - name: Build Content Releases and dependencies
+        run: yarn nx run @strapi/content-releases:build --nx-ignore-cycles --parallel=2
+
+      - name: Prove review regression against current PR head
+        shell: bash
+        run: |
+          set +e
+          yarn workspace @strapi/content-releases test:unit --runInBand server/src/services/__tests__/release.test.ts
+          code=$?
+          set -e
+          if [ "$code" -eq 0 ]; then
+            echo "Expected the new review regression to fail before the source repair"
+            exit 1
+          fi
+
+      - name: Apply source repair
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path("packages/core/content-releases/server/src/services/release.ts")
+          source = path.read_text()
+
+          helpers_start = source.index(
+              "  /**\n   * Given a release id, it returns the actions formatted ready to be used to publish them."
+          )
+          helpers_end = source.index("\n\n  return {", helpers_start)
+          helpers = """  const getReleaseActions = async (releaseId: Release['id']) => {
+            const actions = (await strapi.db.query(RELEASE_ACTION_MODEL_UID).findMany({
+              where: {
+                release: {
+                  id: releaseId,
+                },
+              },
+            })) as ReleaseAction[];
+
+            if (actions.length === 0) {
+              throw new errors.ValidationError('No entries to publish');
+            }
+
+            return actions;
+          };
+
+          /**
+           * Formats a release-action snapshot ready to publish.
+           * Validation and publishing deliberately share this same in-memory snapshot so an
+           * action cannot be changed between the validation query and the publish query.
+           */
+          const getFormattedActions = (actions: ReleaseAction[]) => {
+            const formattedActions: {
+              [key: UID.ContentType]: {
+                publish: { documentId: ReleaseAction['entryDocumentId']; locale?: string }[];
+                unpublish: { documentId: ReleaseAction['entryDocumentId']; locale?: string }[];
+              };
+            } = {};
+
+            for (const action of actions) {
+              const contentTypeUid: UID.ContentType = action.contentType;
+
+              if (!formattedActions[contentTypeUid]) {
+                formattedActions[contentTypeUid] = {
+                  publish: [],
+                  unpublish: [],
+                };
+              }
+
+              formattedActions[contentTypeUid][action.type].push({
+                documentId: action.entryDocumentId,
+                locale: action.locale,
+              });
+            }
+
+            return formattedActions;
+          };
+
+          const validatePublishActions = async (actions: ReleaseAction[]) => {
+            const validity = await Promise.all(
+              actions
+                .filter((action) => action.type === 'publish')
+                .map((action) =>
+                  getDraftEntryValidStatus(
+                    {
+                      contentType: action.contentType,
+                      documentId: action.entryDocumentId,
+                      locale: action.locale,
+                    },
+                    { strapi }
+                  )
+                )
+            );
+
+            if (validity.some((isValid) => !isValid)) {
+              throw new errors.ValidationError('Release is blocked');
+            }
+          };"""
+          source = source[:helpers_start] + helpers + source[helpers_end:]
+
+          old = """          // Release action validity is cached for the admin UI and can become stale when
+                    // content changes outside the document-service middleware. Revalidate immediately
+                    // before publishing so the publish decision reflects the current entries.
+                    await validatePublishActions(releaseId);
+
+                    strapi.log.info(`[Content Releases] Starting to publish release ${lockedRelease.name}`);
+
+                    const formattedActions = await getFormattedActions(releaseId);"""
+          new = """          // Release action validity is cached for the admin UI and can become stale when
+                    // content changes outside the document-service middleware. Read the actions once
+                    // after locking the release, then validate and publish that exact snapshot.
+                    const actions = await getReleaseActions(releaseId);
+                    await validatePublishActions(actions);
+
+                    strapi.log.info(`[Content Releases] Starting to publish release ${lockedRelease.name}`);
+
+                    const formattedActions = getFormattedActions(actions);"""
+          if source.count(old) != 1:
+              raise SystemExit(f"publish block occurrence count: {source.count(old)}")
+          source = source.replace(old, new, 1)
+
+          path.write_text(source)
+          PY
+          git diff --check
+
+      - name: Run repaired focused regression
+        run: yarn workspace @strapi/content-releases test:unit --runInBand server/src/services/__tests__/release.test.ts
+
+      - name: Run complete server unit suite
+        run: yarn workspace @strapi/content-releases test:unit --runInBand
+
+      - name: Type check
+        run: yarn workspace @strapi/content-releases build:types
+
+      - name: Lint
+        run: yarn workspace @strapi/content-releases lint
+
+      - name: Formatting
+        run: yarn prettier --check packages/core/content-releases/server/src/services/release.ts packages/core/content-releases/server/src/services/__tests__/release.test.ts
+
+      - name: Verify focused product diff
+        shell: bash
+        run: |
+          git diff --check
+          files="$(git diff --name-only HEAD)"
+          test "$files" = "$(printf '%s\n' \
+            packages/core/content-releases/server/src/services/__tests__/release.test.ts \
+            packages/core/content-releases/server/src/services/release.ts)"
+
       - name: Commit and push repaired candidate
         shell: bash
         run: |
           git config user.name 'dijedontahiri'
           git config user.email '99071957+dijedontahiri@users.noreply.github.com'
           git add packages/core/content-releases/server/src/services/release.ts packages/core/content-releases/server/src/services/__tests__/release.test.ts
-          git commit -m 'fix(content-releases): preserve publish preflight semantics'
+          git commit -m 'fix(content-releases): validate published action snapshot'
           git push origin HEAD:fix/27722-revalidate-release-actions
