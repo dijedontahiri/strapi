@@ -1,0 +1,82 @@
+name: Validate 27722 review follow-up
+
+on:
+  push:
+    branches:
+      - validate/27722-review-fix-20260919
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_SHA: ffa566a408cc0112185af1a16446aeddad2ba864
+  BASE_SHA: d83af0410bf31b034b01757729f2231862ee5e87
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+  NODE_OPTIONS: --max-old-space-size=6144
+
+jobs:
+  validate:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ffa566a408cc0112185af1a16446aeddad2ba864
+          fetch-depth: 4
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install and build content releases
+        run: |
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git cat-file -e "$BASE_SHA^{commit}"
+          corepack enable
+          yarn install --immutable
+          yarn nx run @strapi/content-releases:build --nx-ignore-cycles --parallel=2
+      - name: Prove current-develop regression
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=packages/core/content-releases/server/src/services/release.ts
+          cp "$source" /tmp/fixed-release.ts
+          trap 'cp /tmp/fixed-release.ts "$source"' EXIT
+          git show "$BASE_SHA:$source" > "$source"
+          set +e
+          yarn workspace @strapi/content-releases test:unit --runInBand server/src/services/__tests__/release.test.ts --testNamePattern='revalidates publish actions and blocks entries that are currently invalid' --json --outputFile=/tmp/before.json
+          status=$?
+          set -e
+          test "$status" -ne 0
+          node <<'NODE'
+          const assert = require('node:assert/strict');
+          const result = require('/tmp/before.json');
+          assert.equal(result.numRuntimeErrorTestSuites, 0);
+          assert.equal(result.numFailedTests, 1);
+          const test = result.testResults.flatMap((suite) => suite.assertionResults ?? []).find((entry) => entry.title === 'revalidates publish actions and blocks entries that are currently invalid');
+          assert.equal(test?.status, 'failed');
+          NODE
+          cp /tmp/fixed-release.ts "$source"
+          trap - EXIT
+      - name: Run focused release regressions
+        run: yarn workspace @strapi/content-releases test:unit --runInBand server/src/services/__tests__/release.test.ts
+      - name: Run complete server unit suite
+        run: yarn workspace @strapi/content-releases test:unit --runInBand
+      - name: Type-build package
+        run: yarn nx run @strapi/content-releases:build:types --nx-ignore-cycles
+      - name: Lint package
+        run: yarn workspace @strapi/content-releases lint
+      - name: Check formatting and exact diff
+        shell: bash
+        run: |
+          yarn prettier --check packages/core/content-releases/server/src/services/release.ts packages/core/content-releases/server/src/services/__tests__/release.test.ts
+          git diff --check "$BASE_SHA"
+          actual="$(git diff --name-only "$BASE_SHA" | sort)"
+          expected="$(printf '%s\n' packages/core/content-releases/server/src/services/release.ts packages/core/content-releases/server/src/services/__tests__/release.test.ts | sort)"
+          test "$actual" = "$expected"
