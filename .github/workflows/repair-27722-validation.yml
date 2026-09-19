@@ -1,0 +1,96 @@
+name: Repair 27722 candidate validation
+
+on:
+  push:
+    branches:
+      - automation/27722-repair-validation
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/27722-revalidate-release-actions
+          fetch-depth: 0
+      - name: Preserve preflight semantics and async sequencing tests
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          release_path = Path('packages/core/content-releases/server/src/services/release.ts')
+          source = release_path.read_text()
+          old = """        // Release action validity is cached for the admin UI and can become stale when
+        // content changes outside the document-service middleware. Revalidate immediately
+        // before publishing so the publish decision reflects the current entries.
+        await validatePublishActions(releaseId);
+
+        try {
+          strapi.log.info(`[Content Releases] Starting to publish release ${lockedRelease.name}`);
+"""
+          new = """        try {
+          // Release action validity is cached for the admin UI and can become stale when
+          // content changes outside the document-service middleware. Revalidate immediately
+          // before publishing so the publish decision reflects the current entries.
+          await validatePublishActions(releaseId);
+
+          strapi.log.info(`[Content Releases] Starting to publish release ${lockedRelease.name}`);
+"""
+          assert source.count(old) == 1
+          source = source.replace(old, new)
+
+          catch_old = """        } catch (error) {
+          dispatchWebhook(ALLOWED_WEBHOOK_EVENTS.RELEASES_PUBLISH, {
+"""
+          catch_new = """        } catch (error) {
+          // A fresh content validation failure is a pre-flight rejection, not a failed
+          // publish attempt. Throwing rolls back the locking transaction without changing
+          // the release status or emitting a publish-failure webhook/audit entry.
+          if (error instanceof errors.ValidationError && error.message === 'Release is blocked') {
+            throw error;
+          }
+
+          dispatchWebhook(ALLOWED_WEBHOOK_EVENTS.RELEASES_PUBLISH, {
+"""
+          assert source.count(catch_old) == 1
+          source = source.replace(catch_old, catch_new)
+          release_path.write_text(source)
+
+          test_path = Path('packages/core/content-releases/server/src/services/__tests__/release.test.ts')
+          tests = test_path.read_text()
+          old_loop = """      for (let i = 0; i < 5; i += 1) {
+        await Promise.resolve();
+      }
+
+      expect(callOrder).toEqual(['call:parentDoc']);
+"""
+          new_loop = """      // Fresh release-action validation adds bounded async preflight work before
+      // document publishing begins. Wait for that preflight without weakening the
+      // sequentiality assertion below.
+      for (let i = 0; i < 20 && callOrder.length === 0; i += 1) {
+        await Promise.resolve();
+      }
+
+      expect(callOrder).toEqual(['call:parentDoc']);
+"""
+          assert tests.count(old_loop) == 1
+          tests = tests.replace(old_loop, new_loop)
+          test_path.write_text(tests)
+          PY
+
+          git diff --check
+          git diff -- packages/core/content-releases/server/src/services/release.ts packages/core/content-releases/server/src/services/__tests__/release.test.ts
+      - name: Commit and push repaired candidate
+        shell: bash
+        run: |
+          git config user.name 'dijedontahiri'
+          git config user.email '99071957+dijedontahiri@users.noreply.github.com'
+          git add packages/core/content-releases/server/src/services/release.ts packages/core/content-releases/server/src/services/__tests__/release.test.ts
+          git commit -m 'fix(content-releases): preserve publish preflight semantics'
+          git push origin HEAD:fix/27722-revalidate-release-actions
