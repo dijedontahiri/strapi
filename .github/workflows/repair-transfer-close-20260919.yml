@@ -1,0 +1,309 @@
+name: Verify transfer close ownership repair
+on:
+  push:
+    branches: [validation/20260919-transfer-close-repair]
+    paths: [.github/workflows/repair-transfer-close-20260919.yml]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: transfer-close-repair-20260919
+  cancel-in-progress: false
+jobs:
+  verify:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      CI: true
+      NX_DAEMON: false
+      BASE: 3cd7dba3495e094682cc7a8d0eb83bde77e9b0b4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 3cd7dba3495e094682cc7a8d0eb83bde77e9b0b4
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify fork parent and immutable source; retain instructions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(gh api repos/dijedontahiri/strapi --jq .parent.full_name)" = strapi/strapi
+          test "$(git rev-parse HEAD)" = "$BASE"
+          mkdir -p "$RUNNER_TEMP/evidence/policy"
+          for p in AGENTS.md CONTRIBUTING.md SECURITY.md .github/PULL_REQUEST_TEMPLATE.md packages/AGENTS.md packages/core/AGENTS.md packages/core/data-transfer/AGENTS.md packages/core/data-transfer/src/AGENTS.md packages/core/data-transfer/src/strapi/AGENTS.md packages/core/data-transfer/src/strapi/remote/AGENTS.md packages/core/data-transfer/src/strapi/remote/handlers/AGENTS.md packages/core/data-transfer/src/strapi/remote/handlers/__tests__/AGENTS.md; do
+            if [ -f "$p" ]; then mkdir -p "$RUNNER_TEMP/evidence/policy/$(dirname "$p")"; cp "$p" "$RUNNER_TEMP/evidence/policy/$p"; cat "$p"; fi
+          done
+          printf '%s\n' "$BASE" > "$RUNNER_TEMP/evidence/base.txt"
+          node --version > "$RUNNER_TEMP/evidence/node.txt"
+      - name: Install immutable dependencies and build package prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          yarn install --immutable > "$RUNNER_TEMP/evidence/install.log" 2>&1 || { tail -n 100 "$RUNNER_TEMP/evidence/install.log"; exit 1; }
+          yarn nx run @strapi/data-transfer:build --nx-ignore-cycles --parallel=2 > "$RUNNER_TEMP/evidence/build.log" 2>&1 || { tail -n 100 "$RUNNER_TEMP/evidence/build.log"; exit 1; }
+      - name: Reproduce late-close failures against original implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib,subprocess
+          path=pathlib.Path('packages/core/data-transfer/src/strapi/remote/handlers/utils.ts')
+          assert subprocess.check_output(['git','hash-object',str(path)],text=True).strip()=='100897a8eaf645a1dc86494fe318c2c8657aa9f5'
+          PY
+          cat > packages/core/data-transfer/src/strapi/remote/handlers/__tests__/utils-lifecycle.test.ts <<'TS'
+          import { EventEmitter } from 'events';
+          import type { Context } from 'koa';
+          import type { WebSocket } from 'ws';
+          import { WebSocketServer } from 'ws';
+
+          import { handlerControllerFactory } from '../utils';
+
+          const originalStrapi = Object.getOwnPropertyDescriptor(globalThis, 'strapi');
+
+          const createOwner = () => ({
+            server: { httpServer: { headersTimeout: 60_000, requestTimeout: 300_000 } },
+            db: { lifecycles: { disable: jest.fn(), enable: jest.fn() } },
+            log: { info: jest.fn(), error: jest.fn() },
+          });
+
+          const setOwner = (owner: ReturnType<typeof createOwner>) => {
+            Object.defineProperty(globalThis, 'strapi', {
+              value: owner,
+              writable: true,
+              configurable: true,
+            });
+          };
+
+          const deferred = () => {
+            let resolve!: () => void;
+            let reject!: (error: Error) => void;
+            const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+              resolve = resolvePromise;
+              reject = rejectPromise;
+            });
+            return { promise, resolve, reject };
+          };
+
+          const connect = async (onClose: () => Promise<void>) => {
+            const client = Object.assign(new EventEmitter(), {
+              terminate: jest.fn(),
+              send: jest.fn(),
+            });
+            const destroy = jest.fn();
+            const ctx = {
+              headers: { upgrade: 'websocket' },
+              req: { socket: { destroy } },
+              request: { socket: {} },
+            } as unknown as Context;
+            let server: WebSocketServer | undefined;
+            jest.spyOn(WebSocketServer.prototype, 'handleUpgrade').mockImplementation(function (
+              this: WebSocketServer,
+              request,
+              _socket,
+              _head,
+              callback
+            ) {
+              server = this;
+              callback(client as unknown as WebSocket, request);
+            });
+            await handlerControllerFactory(() => ({ onClose }))({ verify: jest.fn() })(ctx);
+            expect(client.listenerCount('close')).toBe(1);
+            const close = client.listeners('close')[0] as (
+              code: number,
+              reason: Buffer
+            ) => Promise<void>;
+            server?.close();
+            return { close: () => close(1000, Buffer.alloc(0)), client, destroy };
+          };
+
+          afterEach(() => {
+            jest.restoreAllMocks();
+            if (originalStrapi) {
+              Object.defineProperty(globalThis, 'strapi', originalStrapi);
+            } else {
+              Reflect.deleteProperty(globalThis, 'strapi');
+            }
+          });
+
+          describe('transfer WebSocket close ownership', () => {
+            test('restores lifecycles and timeouts for the active connection owner', async () => {
+              const owner = createOwner();
+              setOwner(owner);
+              const connection = await connect(async () => {});
+              expect(owner.db.lifecycles.disable).toHaveBeenCalledTimes(1);
+              expect(owner.server.httpServer.headersTimeout).toBe(0);
+              await expect(connection.close()).resolves.toBeUndefined();
+              expect(owner.db.lifecycles.enable).toHaveBeenCalledTimes(1);
+              expect(owner.server.httpServer).toEqual({
+                headersTimeout: 60_000,
+                requestTimeout: 300_000,
+              });
+            });
+
+            test('settles a delayed close after the server instance has been removed', async () => {
+              const owner = createOwner();
+              setOwner(owner);
+              const gate = deferred();
+              const connection = await connect(() => gate.promise);
+              const closing = connection.close();
+              Reflect.deleteProperty(globalThis, 'strapi');
+              gate.resolve();
+              await expect(closing).resolves.toBeUndefined();
+              expect(owner.db.lifecycles.enable).not.toHaveBeenCalled();
+            });
+
+            test('does not restore a replacement server from an old connection', async () => {
+              const owner = createOwner();
+              setOwner(owner);
+              const gate = deferred();
+              const connection = await connect(() => gate.promise);
+              const closing = connection.close();
+              const replacement = createOwner();
+              replacement.server.httpServer.headersTimeout = 1234;
+              replacement.server.httpServer.requestTimeout = 5678;
+              setOwner(replacement);
+              gate.resolve();
+              await expect(closing).resolves.toBeUndefined();
+              expect(replacement.db.lifecycles.enable).not.toHaveBeenCalled();
+              expect(replacement.server.httpServer).toEqual({
+                headersTimeout: 1234,
+                requestTimeout: 5678,
+              });
+              expect(owner.db.lifecycles.enable).not.toHaveBeenCalled();
+            });
+
+            test('reports a late handler rejection without consulting the removed instance', async () => {
+              const owner = createOwner();
+              setOwner(owner);
+              const gate = deferred();
+              const connection = await connect(() => gate.promise);
+              const closing = connection.close();
+              Reflect.deleteProperty(globalThis, 'strapi');
+              const failure = new Error('late close failure');
+              gate.reject(failure);
+              await expect(closing).resolves.toBeUndefined();
+              expect(owner.log.error).toHaveBeenCalledWith(failure);
+              expect(connection.client.terminate).toHaveBeenCalledTimes(1);
+              expect(connection.destroy).toHaveBeenCalledTimes(1);
+              expect(owner.db.lifecycles.enable).not.toHaveBeenCalled();
+            });
+          });
+          TS
+          yarn prettier --write packages/core/data-transfer/src/strapi/remote/handlers/__tests__/utils-lifecycle.test.ts
+          set +e
+          yarn workspace @strapi/data-transfer test:unit --runInBand --runTestsByPath src/strapi/remote/handlers/__tests__/utils-lifecycle.test.ts > "$RUNNER_TEMP/evidence/original.log" 2>&1
+          result=$?
+          set -e
+          cat "$RUNNER_TEMP/evidence/original.log"
+          test "$result" -ne 0
+          python3 - <<'PY'
+          import os,pathlib,re
+          text=(pathlib.Path(os.environ['RUNNER_TEMP'])/'evidence/original.log').read_text()
+          assert 'strapi is not defined' in text,text[-10000:]
+          assert re.search(r'Tests:\s+3 failed, 1 passed, 4 total',text),text[-10000:]
+          PY
+      - name: Apply only the connection-owner cleanup correction
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib
+          p=pathlib.Path('packages/core/data-transfer/src/strapi/remote/handlers/utils.ts')
+          text=p.read_text();start=text.index('      const cb: WSCallback = (ws) => {');end=text.index('\n      try {\n        handleWSUpgrade',start)
+          prefix,block,suffix=text[:start],text[start:end],text[end:]
+          block=block.replace('      const cb: WSCallback = (ws) => {','      const cb: WSCallback = (ws) => {\n        const connectionStrapi = strapi;')
+          block=block.replace('strapi?.log?.','connectionStrapi.log?.')
+          old="""            resetTimeouts();
+                      strapi.db.lifecycles.enable();
+                      strapi.log.info('[Data transfer] Restoring lifecycle hooks');"""
+          # Preserve the repository's exact indentation rather than matching rendered text.
+          old="            resetTimeouts();\n            strapi.db.lifecycles.enable();\n            strapi.log.info('[Data transfer] Restoring lifecycle hooks');"
+          assert block.count(old)==1
+          new="            // A delayed close must not revive a destroyed or replacement instance.\n            if (hasHttpServer() && strapi === connectionStrapi) {\n              resetTimeouts();\n              connectionStrapi.db.lifecycles.enable();\n              connectionStrapi.log.info('[Data transfer] Restoring lifecycle hooks');\n            }"
+          block=block.replace(old,new)
+          p.write_text(prefix+block+suffix)
+          PY
+          yarn prettier --write packages/core/data-transfer/src/strapi/remote/handlers/utils.ts
+          yarn workspace @strapi/data-transfer test:unit --runInBand --runTestsByPath src/strapi/remote/handlers/__tests__/utils-lifecycle.test.ts > "$RUNNER_TEMP/evidence/fixed.log" 2>&1 || { cat "$RUNNER_TEMP/evidence/fixed.log"; exit 1; }
+          cat "$RUNNER_TEMP/evidence/fixed.log"
+      - name: Run the full package unit suite, types, lint and formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          yarn workspace @strapi/data-transfer test:unit --runInBand > "$RUNNER_TEMP/evidence/package.log" 2>&1 || { tail -n 150 "$RUNNER_TEMP/evidence/package.log"; exit 1; }
+          tail -n 15 "$RUNNER_TEMP/evidence/package.log"
+          yarn workspace @strapi/data-transfer test:ts > "$RUNNER_TEMP/evidence/types.log" 2>&1 || { cat "$RUNNER_TEMP/evidence/types.log"; exit 1; }
+          yarn workspace @strapi/data-transfer lint > "$RUNNER_TEMP/evidence/lint.log" 2>&1 || { cat "$RUNNER_TEMP/evidence/lint.log"; exit 1; }
+          yarn prettier --check packages/core/data-transfer/src/strapi/remote/handlers/utils.ts packages/core/data-transfer/src/strapi/remote/handlers/__tests__/utils-lifecycle.test.ts
+          git add --intent-to-add packages/core/data-transfer/src/strapi/remote/handlers/__tests__/utils-lifecycle.test.ts
+          git diff --check
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,subprocess
+          out=pathlib.Path(os.environ['RUNNER_TEMP'])/'evidence'
+          paths=['packages/core/data-transfer/src/strapi/remote/handlers/utils.ts','packages/core/data-transfer/src/strapi/remote/handlers/__tests__/utils-lifecycle.test.ts']
+          assert set(subprocess.check_output(['git','diff','--name-only'],text=True).splitlines())==set(paths)
+          assert subprocess.check_output(['git','diff','--cached','--name-only'],text=True).strip()==''
+          assert subprocess.check_output(['git','ls-files','--others','--exclude-standard'],text=True).strip()==''
+          assert subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()==os.environ['BASE']
+          (out/'candidate.patch').write_bytes(subprocess.check_output(['git','diff']))
+          (out/'manifest.json').write_text(json.dumps({'base':os.environ['BASE'],'files':{p:hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() for p in paths}},indent=2))
+          (out/'verified.txt').write_text('Original: three regression failures and one passing control. Fixed: regression suite, complete package unit suite, package type check, package lint, formatting and exact source scope passed. Full monorepo and browser E2E were not run. Independent repair preparation only.\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: transfer-close-repair-evidence
+          path: ${{ runner.temp }}/evidence/
+          retention-days: 7
+          if-no-files-found: error
+  publish_preparation:
+    needs: verify
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    env:
+      BASE: 3cd7dba3495e094682cc7a8d0eb83bde77e9b0b4
+      BRANCH: repair/20260919-transfer-close-owner
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 3cd7dba3495e094682cc7a8d0eb83bde77e9b0b4
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: transfer-close-repair-evidence
+          path: ${{ runner.temp }}/verified
+      - name: Publish the verified independent repair without touching existing PRs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$RUNNER_TEMP/verified/verified.txt"
+          gh auth setup-git
+          test "$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)" = "$BASE"
+          git apply --index "$RUNNER_TEMP/verified/candidate.patch"
+          git diff --cached --check
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,subprocess
+          m=json.loads((pathlib.Path(os.environ['RUNNER_TEMP'])/'verified/manifest.json').read_text())
+          assert m['base']==os.environ['BASE']
+          assert set(subprocess.check_output(['git','diff','--cached','--name-only'],text=True).splitlines())==set(m['files'])
+          for p,h in m['files'].items(): assert hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==h
+          assert subprocess.check_output(['git','diff','--name-only'],text=True).strip()==''
+          PY
+          git config user.name 'Dijedon Tahiri'
+          git config user.email '99071957+dijedontahiri@users.noreply.github.com'
+          git commit -m 'fix(data-transfer): keep late cleanup scoped to its connection owner' -m "AI-assisted independent repair preparation. Before/after regressions, full package unit suite, type checks and lint are recorded in workflow run $GITHUB_RUN_ID. Full monorepo and browser E2E remain outstanding. No existing PR branch is modified."
+          git push origin "HEAD:refs/heads/$BRANCH"
+          test "$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)" = "$(git rev-parse HEAD)"
+          git show --stat --oneline HEAD
