@@ -1,0 +1,77 @@
+name: Validate #24394 custom field registration
+
+on:
+  push:
+    branches:
+      - validate/24394-custom-field
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 9bf70558e673e88241acdf28bc538b398e3e889b
+          fetch-depth: 0
+
+      - name: Verify candidate source
+        run: |
+          test "$(git rev-parse HEAD)" = "9bf70558e673e88241acdf28bc538b398e3e889b"
+          git diff --exit-code d83af0410bf31b034b01757729f2231862ee5e87...HEAD -- \
+            packages/core/core/src/core-api/routes/validation/mappers.ts \
+            packages/core/core/src/core-api/routes/validation/__tests__/mappers.test.ts
+          test "$(git diff --name-only d83af0410bf31b034b01757729f2231862ee5e87...HEAD | sort)" = "$(printf '%s\n%s' 'packages/core/core/src/core-api/routes/validation/__tests__/mappers.test.ts' 'packages/core/core/src/core-api/routes/validation/mappers.ts' | sort)"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: yarn
+
+      - run: corepack enable
+      - run: yarn install --immutable
+
+      - name: Prove baseline regression
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          cp packages/core/core/src/core-api/routes/validation/mappers.ts /tmp/candidate-mappers.ts
+          git show d83af0410bf31b034b01757729f2231862ee5e87:packages/core/core/src/core-api/routes/validation/mappers.ts > packages/core/core/src/core-api/routes/validation/mappers.ts
+          set +e
+          yarn jest --config packages/core/core/jest.config.js packages/core/core/src/core-api/routes/validation/__tests__/mappers.test.ts --runInBand
+          rc=$?
+          set -e
+          cp /tmp/candidate-mappers.ts packages/core/core/src/core-api/routes/validation/mappers.ts
+          if [ "$rc" -eq 0 ]; then
+            echo 'Expected the late-registration regression to fail on develop'
+            exit 1
+          fi
+
+      - name: Focused regression
+        run: yarn jest --config packages/core/core/jest.config.js packages/core/core/src/core-api/routes/validation/__tests__/mappers.test.ts --runInBand
+
+      - name: Route validation unit suite
+        run: yarn jest --config packages/core/core/jest.config.js packages/core/core/src/core-api/routes/validation/__tests__ --runInBand
+
+      - name: Core TypeScript
+        run: yarn workspace @strapi/core test:ts
+
+      - name: Lint changed files
+        run: yarn eslint packages/core/core/src/core-api/routes/validation/mappers.ts packages/core/core/src/core-api/routes/validation/__tests__/mappers.test.ts --max-warnings=0
+
+      - name: Formatting
+        run: yarn prettier --check packages/core/core/src/core-api/routes/validation/mappers.ts packages/core/core/src/core-api/routes/validation/__tests__/mappers.test.ts
+
+      - name: Verify clean candidate tree
+        run: |
+          git diff --exit-code
+          test -z "$(git status --porcelain --untracked-files=all)"
