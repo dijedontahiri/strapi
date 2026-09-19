@@ -59,6 +59,8 @@ jobs:
         run: |
           corepack enable
           yarn install --immutable
+      - name: Format changed files
+        run: yarn prettier --write packages/core/content-type-builder/admin/src/components/FormModal/reducer.ts packages/core/content-type-builder/admin/src/components/FormModal/tests/reducer.uid.test.ts
       - name: Build content-type-builder and dependencies
         env:
           NODE_OPTIONS: --max-old-space-size=6144
