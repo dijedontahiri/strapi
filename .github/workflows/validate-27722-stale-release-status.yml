@@ -58,10 +58,10 @@ jobs:
           cd source
           yarn install --immutable
 
-      - name: Build runtime workspace dependencies
+      - name: Build runtime and declaration workspace dependencies
         run: |
           cd source
-          yarn nx run-many --targets=build --projects=@strapi/types,@strapi/utils,@strapi/database --nx-ignore-cycles --parallel=3
+          yarn nx run-many --targets=build --projects=@strapi/admin,@strapi/types,@strapi/utils,@strapi/database --nx-ignore-cycles --parallel=3
 
       - name: Add baseline regression tests
         run: |
