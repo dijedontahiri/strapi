@@ -65,6 +65,13 @@ jobs:
 
           import { handlerControllerFactory } from '../utils';
 
+          // Match the CommonJS ws export used by the compiled Strapi server.
+          vi.mock('ws', async () => {
+            const { createRequire } = await import('node:module');
+            const ws: typeof import('ws') = createRequire(import.meta.url)('ws');
+            return { WebSocket: ws, WebSocketServer: ws.WebSocketServer };
+          });
+
           const originalStrapi = Object.getOwnPropertyDescriptor(globalThis, 'strapi');
 
           const createOwner = () => ({
@@ -102,7 +109,7 @@ jobs:
               req: { socket: { destroy } },
               request: { socket: {} },
             } as unknown as Context;
-            let server: WebSocketServer | undefined;
+            const servers: WebSocketServer[] = [];
             vi.spyOn(WebSocketServer.prototype, 'handleUpgrade').mockImplementation(function (
               this: WebSocketServer,
               request,
@@ -110,7 +117,7 @@ jobs:
               _head,
               callback
             ) {
-              server = this;
+              servers.push(this);
               callback(client as unknown as WebSocket, request);
             });
             await handlerControllerFactory(() => ({ onClose }))({ verify: vi.fn() })(ctx);
@@ -119,7 +126,7 @@ jobs:
               code: number,
               reason: Buffer
             ) => Promise<void>;
-            server?.close();
+            servers.forEach((server) => server.close());
             return { close: () => close(1000, Buffer.alloc(0)), client, destroy };
           };
 
