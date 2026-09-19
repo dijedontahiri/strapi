@@ -264,6 +264,9 @@ jobs:
       - name: Install dependencies
         run: yarn install --immutable
 
+      - name: Format repaired source
+        run: yarn prettier --write packages/core/content-releases/server/src/services/release.ts packages/core/content-releases/server/src/services/__tests__/release.test.ts
+
       - name: Build Content Releases and dependencies
         run: yarn nx run @strapi/content-releases:build --nx-ignore-cycles --parallel=2
 
