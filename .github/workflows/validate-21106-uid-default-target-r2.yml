@@ -1,4 +1,4 @@
-name: Validate UID target default reset r2
+name: Apply UID clear-target review fix
 
 on:
   push:
@@ -6,95 +6,78 @@ on:
       - validate/21106-uid-default-target-r2-20260919
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: validate-21106-uid-default-target-r2-${{ github.ref }}
+  group: apply-21106-uid-clear-target-${{ github.ref }}
   cancel-in-progress: false
 
 env:
-  NX_DAEMON: 'false'
-  STRAPI_TELEMETRY_DISABLED: 'true'
-  EXPECTED_SOURCE: 34d87677ab905a216a5b34216c6621e612b3ebbb
-  BASE_SOURCE: d83af0410bf31b034b01757729f2231862ee5e87
+  TARGET_BRANCH: fix-21106-uid-default-target
+  EXPECTED_OLD_HEAD: 34d87677ab905a216a5b34216c6621e612b3ebbb
 
 jobs:
-  ctb-front:
+  apply:
     if: github.repository == 'dijedontahiri/strapi'
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        node: [22, 24, 26]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 34d87677ab905a216a5b34216c6621e612b3ebbb
+          ref: ${{ env.TARGET_BRANCH }}
           fetch-depth: 8
-          persist-credentials: false
+          persist-credentials: true
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: ${{ matrix.node }}
-      - name: Install pinned dependencies
-        run: |
-          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
-          git cat-file -e "$BASE_SOURCE^{commit}"
-          corepack enable
-          yarn install --immutable
-      - name: Build content-type-builder and workspace dependencies
-        env:
-          NODE_OPTIONS: --max-old-space-size=6144
-        run: yarn nx run @strapi/content-type-builder:build --nx-ignore-cycles --parallel=2
-      - name: Prove the UID default regression against current develop
-        if: matrix.node == 22
+          node-version: 22
+      - name: Verify inspected head
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_OLD_HEAD"
+      - name: Apply review correction
         shell: bash
         run: |
           set -euo pipefail
-          source=packages/core/content-type-builder/admin/src/components/FormModal/reducer.ts
-          cp "$source" /tmp/fixed-reducer.ts
-          trap 'cp /tmp/fixed-reducer.ts "$source"' EXIT
-          git show "$BASE_SOURCE:$source" > "$source"
-          set +e
-          yarn workspace @strapi/content-type-builder test:front --runInBand --testPathPattern=reducer.uid.test.ts --json --outputFile=/tmp/uid-default-before.json
-          status=$?
-          set -e
-          test "$status" -eq 1
-          node - <<'NODE'
-          const result = require('/tmp/uid-default-before.json');
-          if (
-            result.numFailedTests !== 1 ||
-            result.numPassedTests !== 1 ||
-            result.numTotalTests !== 2 ||
-            result.numTotalTestSuites !== 1
-          ) {
-            throw new Error(`Unexpected baseline result: ${JSON.stringify({
-              failed: result.numFailedTests,
-              passed: result.numPassedTests,
-              total: result.numTotalTests,
-              suites: result.numTotalTestSuites,
-            })}`);
-          }
-          NODE
-          cp /tmp/fixed-reducer.ts "$source"
-          trap - EXIT
-      - name: Run focused frontend regression test
-        run: yarn workspace @strapi/content-type-builder test:front --runInBand --testPathPattern=reducer.uid.test.ts
-      - name: Run complete content-type-builder frontend suite
-        run: yarn workspace @strapi/content-type-builder test:front --runInBand
-      - name: Type-check content-type-builder frontend
-        run: yarn workspace @strapi/content-type-builder test:ts:front
-      - name: Lint content-type-builder package
-        run: yarn workspace @strapi/content-type-builder lint
-      - name: Check changed-file formatting
-        run: yarn prettier --check packages/core/content-type-builder/admin/src/components/FormModal/reducer.ts packages/core/content-type-builder/admin/src/components/FormModal/tests/reducer.uid.test.ts
-      - name: Verify exact source and focused diff
+          python - <<'PY'
+          from pathlib import Path
+
+          reducer = Path('packages/core/content-type-builder/admin/src/components/FormModal/reducer.ts')
+          text = reducer.read_text()
+          old = """      if (\n        hasDefaultValue &&\n        obj.type === 'uid' &&\n        keys.length === 1 &&\n        keys[0] === 'targetField' &&\n        typeof value === 'string' &&\n        value !== ''\n      ) {\n        delete state.modifiedData.default;\n      }\n\n      set(state, ['modifiedData', ...keys], value);\n"""
+          new = """      const isUidTargetFieldChange =\n        obj.type === 'uid' && keys.length === 1 && keys[0] === 'targetField';\n\n      if (\n        hasDefaultValue &&\n        isUidTargetFieldChange &&\n        typeof value === 'string' &&\n        value !== ''\n      ) {\n        delete state.modifiedData.default;\n      }\n\n      set(\n        state,\n        ['modifiedData', ...keys],\n        isUidTargetFieldChange && value === '' ? null : value\n      );\n"""
+          if old not in text:
+              raise SystemExit('expected reducer block not found')
+          reducer.write_text(text.replace(old, new, 1))
+
+          test = Path('packages/core/content-type-builder/admin/src/components/FormModal/tests/reducer.uid.test.ts')
+          text = test.read_text()
+          old = """    expect(nextState.modifiedData).toEqual({\n      type: 'uid',\n      name: 'slug',\n      default: 'fallback-slug',\n      targetField: '',\n    });\n"""
+          new = """    expect(nextState.modifiedData).toEqual({\n      type: 'uid',\n      name: 'slug',\n      default: 'fallback-slug',\n      targetField: null,\n    });\n"""
+          if old not in text:
+              raise SystemExit('expected clear-target assertion not found')
+          test.write_text(text.replace(old, new, 1))
+          PY
+      - name: Install pinned dependencies
         run: |
-          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
-          git diff --exit-code
-          git diff --cached --exit-code
-          test -z "$(git ls-files --others --exclude-standard)"
-          git diff --check "$BASE_SOURCE" HEAD
-          actual="$(git diff --name-only "$BASE_SOURCE" HEAD | sort)"
+          corepack enable
+          yarn install --immutable
+      - name: Build content-type-builder and dependencies
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: yarn nx run @strapi/content-type-builder:build --nx-ignore-cycles --parallel=2
+      - name: Run focused regression
+        run: yarn workspace @strapi/content-type-builder test:front --runInBand --testPathPattern=reducer.uid.test.ts
+      - name: Check formatting and diff
+        run: |
+          yarn prettier --check packages/core/content-type-builder/admin/src/components/FormModal/reducer.ts packages/core/content-type-builder/admin/src/components/FormModal/tests/reducer.uid.test.ts
+          git diff --check
+          actual="$(git diff --name-only | sort)"
           expected="$(printf '%s\n' packages/core/content-type-builder/admin/src/components/FormModal/reducer.ts packages/core/content-type-builder/admin/src/components/FormModal/tests/reducer.uid.test.ts | sort)"
           test "$actual" = "$expected"
+      - name: Commit and push exact correction
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'Dijedon'
+          git config user.email '99071957+dijedontahiri@users.noreply.github.com'
+          git add packages/core/content-type-builder/admin/src/components/FormModal/reducer.ts packages/core/content-type-builder/admin/src/components/FormModal/tests/reducer.uid.test.ts
+          git commit -m 'fix(content-type-builder): normalize cleared UID target'
+          git push origin HEAD:"$TARGET_BRANCH"
