@@ -1,0 +1,89 @@
+name: validate-20365-component-display-name-case
+
+on:
+  push:
+    branches:
+      - validation/20365-component-display-name-case
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-20365-component-display-name-case-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+  EXPECTED_SOURCE: 95a8539cffe3ae033aadd0e1f935b7e107f252c2
+  BASE_SOURCE: d83af0410bf31b034b01757729f2231862ee5e87
+
+jobs:
+  content-type-builder:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 95a8539cffe3ae033aadd0e1f935b7e107f252c2
+          fetch-depth: 16
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install pinned dependencies
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          git cat-file -e "$BASE_SOURCE^{commit}"
+          corepack enable
+          yarn install --immutable
+      - name: Build content-type-builder and workspace dependencies
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: yarn nx run @strapi/content-type-builder:build --nx-ignore-cycles --parallel=2
+      - name: Baseline negative control
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          set -euo pipefail
+          file=packages/core/content-type-builder/admin/src/pages/ListView/ListView.tsx
+          git show "$BASE_SOURCE:$file" > "$file"
+          set +e
+          yarn workspace @strapi/content-type-builder test:front --runInBand admin/src/pages/ListView/tests/ListView.test.tsx
+          status=$?
+          set -e
+          git checkout "$EXPECTED_SOURCE" -- "$file"
+          if [ "$status" -eq 0 ]; then
+            echo "Regression unexpectedly passes on the develop baseline"
+            exit 1
+          fi
+      - name: Focused frontend regression
+        run: yarn workspace @strapi/content-type-builder test:front --runInBand admin/src/pages/ListView/tests/ListView.test.tsx
+      - name: Full frontend unit suite
+        run: yarn workspace @strapi/content-type-builder test:front --runInBand
+      - name: Frontend TypeScript
+        run: yarn workspace @strapi/content-type-builder test:ts:front
+      - name: Content Type Builder lint
+        run: yarn workspace @strapi/content-type-builder lint
+      - name: Changed-file formatting
+        run: >-
+          yarn prettier --check
+          packages/core/content-type-builder/admin/src/pages/ListView/ListView.tsx
+          packages/core/content-type-builder/admin/src/pages/ListView/tests/ListView.test.tsx
+      - name: Verify exact source and focused diff
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          git diff --exit-code
+          git diff --cached --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          git diff --check "$BASE_SOURCE" HEAD
+          actual="$(git diff --name-only "$BASE_SOURCE" HEAD | sort)"
+          expected="$(printf '%s\n' \
+            packages/core/content-type-builder/admin/src/pages/ListView/ListView.tsx \
+            packages/core/content-type-builder/admin/src/pages/ListView/tests/ListView.test.tsx | sort)"
+          test "$actual" = "$expected"
