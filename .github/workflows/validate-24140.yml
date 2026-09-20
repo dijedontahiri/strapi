@@ -15,7 +15,7 @@ concurrency:
 env:
   NX_DAEMON: 'false'
   STRAPI_TELEMETRY_DISABLED: 'true'
-  EXPECTED_SOURCE: ea82a3e189ba027cb53bf717974cadfe6a6db01b
+  EXPECTED_SOURCE: 7cedfe00568aa3cefa722d1d7158f3d6aaf6a51a
   BASE_SOURCE: d83af0410bf31b034b01757729f2231862ee5e87
 
 jobs:
@@ -30,8 +30,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ea82a3e189ba027cb53bf717974cadfe6a6db01b
-          fetch-depth: 8
+          ref: 7cedfe00568aa3cefa722d1d7158f3d6aaf6a51a
+          fetch-depth: 16
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
@@ -53,14 +53,13 @@ jobs:
           set -euo pipefail
           files=(
             packages/core/content-type-builder/server/src/services/schema-builder/component-builder.ts
-            packages/core/content-type-builder/server/src/services/schema-builder/schema-handler.ts
             packages/core/content-type-builder/admin/src/components/FormModal/component/createComponentSchema.ts
           )
           for file in "${files[@]}"; do
             git show "$BASE_SOURCE:$file" > "$file"
           done
           set +e
-          yarn workspace @strapi/content-type-builder test:unit:vitest server/src/services/schema-builder/__tests__/component-builder.vitest.test.ts server/src/services/schema-builder/__tests__/schema-handler.vitest.test.ts
+          yarn workspace @strapi/content-type-builder test:unit:vitest server/src/services/schema-builder/__tests__/component-builder.vitest.test.ts
           server_status=$?
           yarn workspace @strapi/content-type-builder test:front --runInBand admin/src/components/FormModal/forms/tests/component.test.ts
           admin_status=$?
@@ -74,8 +73,8 @@ jobs:
             echo "Admin regression unexpectedly passes on develop baseline"
             exit 1
           fi
-      - name: Focused server regressions
-        run: yarn workspace @strapi/content-type-builder test:unit:vitest server/src/services/schema-builder/__tests__/component-builder.vitest.test.ts server/src/services/schema-builder/__tests__/schema-handler.vitest.test.ts
+      - name: Focused server regression
+        run: yarn workspace @strapi/content-type-builder test:unit:vitest server/src/services/schema-builder/__tests__/component-builder.vitest.test.ts
       - name: Focused admin regression
         run: yarn workspace @strapi/content-type-builder test:front --runInBand admin/src/components/FormModal/forms/tests/component.test.ts
       - name: Full server unit suite
@@ -92,9 +91,7 @@ jobs:
         run: >-
           yarn prettier --check
           packages/core/content-type-builder/server/src/services/schema-builder/component-builder.ts
-          packages/core/content-type-builder/server/src/services/schema-builder/schema-handler.ts
           packages/core/content-type-builder/server/src/services/schema-builder/__tests__/component-builder.vitest.test.ts
-          packages/core/content-type-builder/server/src/services/schema-builder/__tests__/schema-handler.vitest.test.ts
           packages/core/content-type-builder/admin/src/components/FormModal/component/createComponentSchema.ts
           packages/core/content-type-builder/admin/src/components/FormModal/forms/tests/component.test.ts
       - name: Verify exact source and focused diff
@@ -107,9 +104,7 @@ jobs:
           actual="$(git diff --name-only "$BASE_SOURCE" HEAD | sort)"
           expected="$(printf '%s\n' \
             packages/core/content-type-builder/server/src/services/schema-builder/component-builder.ts \
-            packages/core/content-type-builder/server/src/services/schema-builder/schema-handler.ts \
             packages/core/content-type-builder/server/src/services/schema-builder/__tests__/component-builder.vitest.test.ts \
-            packages/core/content-type-builder/server/src/services/schema-builder/__tests__/schema-handler.vitest.test.ts \
             packages/core/content-type-builder/admin/src/components/FormModal/component/createComponentSchema.ts \
             packages/core/content-type-builder/admin/src/components/FormModal/forms/tests/component.test.ts | sort)"
           test "$actual" = "$expected"
