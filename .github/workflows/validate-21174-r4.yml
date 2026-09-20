@@ -11,7 +11,7 @@ permissions:
 env:
   NX_DAEMON: 'false'
   STRAPI_TELEMETRY_DISABLED: 'true'
-  EXPECTED_SOURCE: 61c40405757c6b41a3e43de7c94d59807042b18d
+  EXPECTED_SOURCE: cf01dd657b47d5d1f7a5ff55394997711ad31cfa
   BASE_SOURCE: d83af0410bf31b034b01757729f2231862ee5e87
 
 jobs:
@@ -27,7 +27,7 @@ jobs:
       - name: Checkout exact candidate
         uses: actions/checkout@v4
         with:
-          ref: 61c40405757c6b41a3e43de7c94d59807042b18d
+          ref: cf01dd657b47d5d1f7a5ff55394997711ad31cfa
           fetch-depth: 0
       - name: Setup Node ${{ matrix.node }}
         uses: actions/setup-node@v4
