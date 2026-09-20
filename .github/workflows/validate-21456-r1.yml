@@ -1,0 +1,85 @@
+name: Validate #21456 local export query URLs r1
+
+on:
+  push:
+    branches:
+      - validate/21456-query-url-r1-20260920
+
+permissions:
+  contents: read
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+  EXPECTED_SOURCE: d066933ffe5d3ab3b36e6b92a194ac1575df2d69
+  BASE_SOURCE: d83af0410bf31b034b01757729f2231862ee5e87
+
+jobs:
+  validate:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: d066933ffe5d3ab3b36e6b92a194ac1575df2d69
+          fetch-depth: 32
+          persist-credentials: false
+      - name: Setup Node ${{ matrix.node }}
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install dependencies
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          git cat-file -e "$BASE_SOURCE^{commit}"
+          corepack enable
+          yarn install --immutable
+      - name: Build data-transfer and dependencies
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: yarn nx run @strapi/data-transfer:build --nx-ignore-cycles --parallel=2
+      - name: Baseline negative control
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          set -euo pipefail
+          file=packages/core/data-transfer/src/strapi/providers/local-source/assets.ts
+          git show "$BASE_SOURCE:$file" > "$file"
+          set +e
+          yarn workspace @strapi/data-transfer test:unit src/strapi/providers/local-source/__tests__/assets.test.ts --runInBand -t "ignores query strings when resolving a local media file"
+          status=$?
+          set -e
+          git checkout "$EXPECTED_SOURCE" -- "$file"
+          test "$status" -ne 0
+      - name: Focused regression
+        run: yarn workspace @strapi/data-transfer test:unit src/strapi/providers/local-source/__tests__/assets.test.ts --runInBand
+      - name: Full data-transfer unit suite
+        if: matrix.node == 22
+        run: yarn workspace @strapi/data-transfer test:unit --runInBand
+      - name: Data-transfer TypeScript
+        run: yarn workspace @strapi/data-transfer test:ts
+      - name: Data-transfer lint
+        if: matrix.node == 22
+        run: yarn workspace @strapi/data-transfer lint
+      - name: Changed-file formatting
+        if: matrix.node == 22
+        run: >-
+          yarn prettier --check
+          packages/core/data-transfer/src/strapi/providers/local-source/assets.ts
+          packages/core/data-transfer/src/strapi/providers/local-source/__tests__/assets.test.ts
+      - name: Verify exact source and focused diff
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          git diff --exit-code
+          git diff --cached --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          git diff --check "$BASE_SOURCE" HEAD
+          actual="$(git diff --name-only "$BASE_SOURCE" HEAD | sort)"
+          expected="$(printf '%s\n' packages/core/data-transfer/src/strapi/providers/local-source/assets.ts packages/core/data-transfer/src/strapi/providers/local-source/__tests__/assets.test.ts | sort)"
+          test "$actual" = "$expected"
