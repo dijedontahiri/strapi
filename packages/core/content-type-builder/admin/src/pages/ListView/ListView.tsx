@@ -173,7 +173,11 @@ const ListView = () => {
           </Flex>
         </Flex>
       )}
-      <LayoutsHeaderCustom id="title" primaryAction={primaryAction} title={upperFirst(label)} />
+      <LayoutsHeaderCustom
+        id="title"
+        primaryAction={primaryAction}
+        title={type.modelType === 'component' ? label : upperFirst(label)}
+      />
       <Layouts.Content>
         <Box
           background="neutral0"
