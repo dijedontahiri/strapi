@@ -15,7 +15,7 @@ concurrency:
 env:
   NX_DAEMON: 'false'
   STRAPI_TELEMETRY_DISABLED: 'true'
-  EXPECTED_SOURCE: 6c79ded48f17cacdd242f669bc8577eb2191b9d5
+  EXPECTED_SOURCE: ea82a3e189ba027cb53bf717974cadfe6a6db01b
   BASE_SOURCE: d83af0410bf31b034b01757729f2231862ee5e87
 
 jobs:
@@ -30,7 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 6c79ded48f17cacdd242f669bc8577eb2191b9d5
+          ref: ea82a3e189ba027cb53bf717974cadfe6a6db01b
           fetch-depth: 8
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
@@ -57,7 +57,6 @@ jobs:
             packages/core/content-type-builder/admin/src/components/FormModal/component/createComponentSchema.ts
           )
           for file in "${files[@]}"; do
-            cp "$file" "/tmp/$(basename "$file").candidate"
             git show "$BASE_SOURCE:$file" > "$file"
           done
           set +e
