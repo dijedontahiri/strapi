@@ -1,0 +1,103 @@
+name: Validate #24140 component name reuse r8
+
+on:
+  push:
+    branches:
+      - validate/24140-component-name-reuse-r8-20260920
+
+permissions:
+  contents: read
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+  EXPECTED_SOURCE: 744c3a3aa6033b9fc5ca43faa1c94e47ea7df455
+  BASE_SOURCE: d83af0410bf31b034b01757729f2231862ee5e87
+
+jobs:
+  validate:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 744c3a3aa6033b9fc5ca43faa1c94e47ea7df455
+          fetch-depth: 32
+          persist-credentials: false
+      - name: Setup Node ${{ matrix.node }}
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install dependencies
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          git cat-file -e "$BASE_SOURCE^{commit}"
+          corepack enable
+          yarn install --immutable
+      - name: Build content-type-builder and workspace dependencies
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: yarn nx run @strapi/content-type-builder:build --nx-ignore-cycles --parallel=2
+      - name: Baseline negative controls
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(
+            packages/core/content-type-builder/server/src/services/schema-builder/component-builder.ts
+            packages/core/content-type-builder/admin/src/components/FormModal/component/createComponentSchema.ts
+          )
+          for file in "${files[@]}"; do
+            git show "$BASE_SOURCE:$file" > "$file"
+          done
+          set +e
+          yarn workspace @strapi/content-type-builder test:unit:vitest server/src/services/schema-builder/__tests__/component-builder.vitest.test.ts
+          server_status=$?
+          yarn workspace @strapi/content-type-builder test:front --runInBand admin/src/components/FormModal/forms/tests/component.test.ts
+          admin_status=$?
+          set -e
+          git checkout "$EXPECTED_SOURCE" -- "${files[@]}"
+          test "$server_status" -ne 0
+          test "$admin_status" -ne 0
+      - name: Focused server regression
+        run: yarn workspace @strapi/content-type-builder test:unit:vitest server/src/services/schema-builder/__tests__/component-builder.vitest.test.ts
+      - name: Focused admin regression
+        run: yarn workspace @strapi/content-type-builder test:front --runInBand admin/src/components/FormModal/forms/tests/component.test.ts
+      - name: Full server unit suite
+        if: matrix.node == 22
+        run: yarn workspace @strapi/content-type-builder test:unit:vitest
+      - name: Full frontend unit suite
+        if: matrix.node == 22
+        run: yarn workspace @strapi/content-type-builder test:front --runInBand
+      - name: Server TypeScript
+        run: yarn workspace @strapi/content-type-builder test:ts:back
+      - name: Frontend TypeScript
+        run: yarn workspace @strapi/content-type-builder test:ts:front
+      - name: Content Type Builder lint
+        if: matrix.node == 22
+        run: yarn workspace @strapi/content-type-builder lint
+      - name: Changed-file formatting
+        if: matrix.node == 22
+        run: >-
+          yarn prettier --check
+          packages/core/content-type-builder/server/src/services/schema-builder/component-builder.ts
+          packages/core/content-type-builder/server/src/services/schema-builder/schema-handler.ts
+          packages/core/content-type-builder/server/src/services/schema-builder/__tests__/component-builder.vitest.test.ts
+          packages/core/content-type-builder/admin/src/components/FormModal/component/createComponentSchema.ts
+          packages/core/content-type-builder/admin/src/components/FormModal/forms/tests/component.test.ts
+      - name: Verify exact source and focused diff
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          git diff --exit-code
+          git diff --cached --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          git diff --check "$BASE_SOURCE" HEAD
+          actual="$(git diff --name-only "$BASE_SOURCE" HEAD | sort)"
+          expected="$(printf '%s\n' packages/core/content-type-builder/server/src/services/schema-builder/component-builder.ts packages/core/content-type-builder/server/src/services/schema-builder/schema-handler.ts packages/core/content-type-builder/server/src/services/schema-builder/__tests__/component-builder.vitest.test.ts packages/core/content-type-builder/admin/src/components/FormModal/component/createComponentSchema.ts packages/core/content-type-builder/admin/src/components/FormModal/forms/tests/component.test.ts | sort)"
+          test "$actual" = "$expected"
