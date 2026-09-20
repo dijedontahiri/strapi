@@ -8,6 +8,16 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: validate-24140-component-name-reuse-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+  EXPECTED_SOURCE: 6c79ded48f17cacdd242f669bc8577eb2191b9d5
+  BASE_SOURCE: d83af0410bf31b034b01757729f2231862ee5e87
+
 jobs:
   content-type-builder:
     if: github.repository == 'dijedontahiri/strapi'
@@ -18,40 +28,45 @@ jobs:
       matrix:
         node: [22, 24, 26]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: 6c79ded48f17cacdd242f669bc8577eb2191b9d5
-          fetch-depth: 0
-      - name: Verify candidate source
-        run: |
-          test "$(git rev-parse HEAD)" = "6c79ded48f17cacdd242f669bc8577eb2191b9d5"
-          test -z "$(git status --porcelain=v1)"
-      - uses: actions/setup-node@v4
+          fetch-depth: 8
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: ${{ matrix.node }}
-          cache: yarn
-      - name: Enable Corepack
-        run: corepack enable
-      - name: Install dependencies
-        run: yarn install --immutable
+      - name: Install pinned dependencies
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          git cat-file -e "$BASE_SOURCE^{commit}"
+          corepack enable
+          yarn install --immutable
+      - name: Build content-type-builder and workspace dependencies
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: yarn nx run @strapi/content-type-builder:build --nx-ignore-cycles --parallel=2
       - name: Baseline negative controls
         if: matrix.node == 22
         shell: bash
         run: |
-          git checkout d83af0410bf31b034b01757729f2231862ee5e87 -- \
-            packages/core/content-type-builder/server/src/services/schema-builder/component-builder.ts \
-            packages/core/content-type-builder/server/src/services/schema-builder/schema-handler.ts \
+          set -euo pipefail
+          files=(
+            packages/core/content-type-builder/server/src/services/schema-builder/component-builder.ts
+            packages/core/content-type-builder/server/src/services/schema-builder/schema-handler.ts
             packages/core/content-type-builder/admin/src/components/FormModal/component/createComponentSchema.ts
+          )
+          for file in "${files[@]}"; do
+            cp "$file" "/tmp/$(basename "$file").candidate"
+            git show "$BASE_SOURCE:$file" > "$file"
+          done
           set +e
           yarn workspace @strapi/content-type-builder test:unit:vitest server/src/services/schema-builder/__tests__/component-builder.vitest.test.ts server/src/services/schema-builder/__tests__/schema-handler.vitest.test.ts
           server_status=$?
           yarn workspace @strapi/content-type-builder test:front --runInBand admin/src/components/FormModal/forms/tests/component.test.ts
           admin_status=$?
           set -e
-          git checkout 6c79ded48f17cacdd242f669bc8577eb2191b9d5 -- \
-            packages/core/content-type-builder/server/src/services/schema-builder/component-builder.ts \
-            packages/core/content-type-builder/server/src/services/schema-builder/schema-handler.ts \
-            packages/core/content-type-builder/admin/src/components/FormModal/component/createComponentSchema.ts
+          git checkout "$EXPECTED_SOURCE" -- "${files[@]}"
           if [ "$server_status" -eq 0 ]; then
             echo "Server regression unexpectedly passes on develop baseline"
             exit 1
@@ -83,8 +98,19 @@ jobs:
           packages/core/content-type-builder/server/src/services/schema-builder/__tests__/schema-handler.vitest.test.ts
           packages/core/content-type-builder/admin/src/components/FormModal/component/createComponentSchema.ts
           packages/core/content-type-builder/admin/src/components/FormModal/forms/tests/component.test.ts
-      - name: Verify exact source and clean tree
+      - name: Verify exact source and focused diff
         run: |
-          test "$(git rev-parse HEAD)" = "6c79ded48f17cacdd242f669bc8577eb2191b9d5"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
           git diff --exit-code
-          test -z "$(git status --porcelain=v1)"
+          git diff --cached --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          git diff --check "$BASE_SOURCE" HEAD
+          actual="$(git diff --name-only "$BASE_SOURCE" HEAD | sort)"
+          expected="$(printf '%s\n' \
+            packages/core/content-type-builder/server/src/services/schema-builder/component-builder.ts \
+            packages/core/content-type-builder/server/src/services/schema-builder/schema-handler.ts \
+            packages/core/content-type-builder/server/src/services/schema-builder/__tests__/component-builder.vitest.test.ts \
+            packages/core/content-type-builder/server/src/services/schema-builder/__tests__/schema-handler.vitest.test.ts \
+            packages/core/content-type-builder/admin/src/components/FormModal/component/createComponentSchema.ts \
+            packages/core/content-type-builder/admin/src/components/FormModal/forms/tests/component.test.ts | sort)"
+          test "$actual" = "$expected"
