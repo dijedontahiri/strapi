@@ -1,0 +1,104 @@
+name: Validate #27461 RBAC condition categories r2
+
+on:
+  push:
+    branches:
+      - validate/27461-rbac-condition-categories-r2-20260920
+
+permissions:
+  contents: read
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+  EXPECTED_SOURCE: 08bf861108a040a5be459754c16fe444ff8d5d93
+  BASE_SOURCE: d83af0410bf31b034b01757729f2231862ee5e87
+
+jobs:
+  validate:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 08bf861108a040a5be459754c16fe444ff8d5d93
+          fetch-depth: 16
+          persist-credentials: false
+      - name: Setup Node ${{ matrix.node }}
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install dependencies
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          git cat-file -e "$BASE_SOURCE^{commit}"
+          corepack enable
+          yarn install --immutable
+      - name: Build Admin and workspace dependencies
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: yarn nx run @strapi/admin:build --nx-ignore-cycles --parallel=2
+      - name: Prove baseline regression fails for the intended assertion
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_PATH='packages/core/admin/admin/src/pages/Settings/pages/Roles/components/ConditionsModal.tsx'
+          TEST_PATH='admin/src/pages/Settings/pages/Roles/components/tests/ConditionsModal.test.tsx'
+          cp "$SOURCE_PATH" /tmp/ConditionsModal.tsx
+          trap 'cp /tmp/ConditionsModal.tsx "$SOURCE_PATH"' EXIT
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('packages/core/admin/admin/src/pages/Settings/pages/Roles/components/ConditionsModal.tsx')
+          text = path.read_text()
+          new = """const getNewStateFromChangedValues = (\n  options: ActionRowProps['arrayOfOptionsGroupedByCategory'],\n  changedValues: string[]\n) =>\n  options.reduce<Record<string, ConditionForm>>((acc, [categoryName, values]) => {\n    acc[categoryName] = values.reduce<ConditionForm>((categoryState, condition) => {\n      categoryState[condition.id] = changedValues.includes(condition.id);\n      return categoryState;\n    }, {});\n\n    return acc;\n  }, {});\n"""
+          old = """const getNewStateFromChangedValues = (\n  options: ActionRowProps['arrayOfOptionsGroupedByCategory'],\n  changedValues: string[]\n) =>\n  options\n    .map(([, values]) => values)\n    .flat()\n    .reduce<Record<string, boolean>>(\n      (acc, curr) => ({ [curr.id]: changedValues.includes(curr.id), ...acc }),\n      {}\n    );\n"""
+          if new not in text:
+              raise SystemExit('candidate helper not found')
+          path.write_text(text.replace(new, old, 1))
+          PY
+          set +e
+          yarn workspace @strapi/admin test:front --runInBand "$TEST_PATH" --json --outputFile=/tmp/rbac-before.json
+          status=$?
+          set -e
+          test "$status" -eq 1
+          node - <<'NODE'
+          const result = require('/tmp/rbac-before.json');
+          const failed = result.testResults.flatMap((suite) =>
+            suite.assertionResults.filter((test) => test.status === 'failed')
+          );
+          if (result.numFailedTests !== 1 || failed.length !== 1 || !failed[0].title.includes('keeps condition state in its category bucket')) {
+            throw new Error(`Unexpected baseline result: ${JSON.stringify({ failed: result.numFailedTests, failedTitles: failed.map((test) => test.title) })}`);
+          }
+          NODE
+          cp /tmp/ConditionsModal.tsx "$SOURCE_PATH"
+          trap - EXIT
+      - name: Focused regression
+        run: yarn workspace @strapi/admin test:front --runInBand admin/src/pages/Settings/pages/Roles/components/tests/ConditionsModal.test.tsx
+      - name: Admin frontend tests
+        if: matrix.node == 22
+        run: yarn workspace @strapi/admin test:front --runInBand
+      - name: TypeScript frontend
+        run: yarn workspace @strapi/admin test:ts:front
+      - name: ESLint affected files
+        if: matrix.node == 22
+        run: yarn eslint packages/core/admin/admin/src/pages/Settings/pages/Roles/components/ConditionsModal.tsx packages/core/admin/admin/src/pages/Settings/pages/Roles/components/tests/ConditionsModal.test.tsx --max-warnings=0
+      - name: Prettier affected files
+        if: matrix.node == 22
+        run: yarn prettier --check packages/core/admin/admin/src/pages/Settings/pages/Roles/components/ConditionsModal.tsx packages/core/admin/admin/src/pages/Settings/pages/Roles/components/tests/ConditionsModal.test.tsx
+      - name: Verify exact source and focused diff
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          git diff --exit-code
+          git diff --cached --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          git diff --check "$BASE_SOURCE" HEAD
+          actual="$(git diff --name-only "$BASE_SOURCE" HEAD | sort)"
+          expected="$(printf '%s\n' packages/core/admin/admin/src/pages/Settings/pages/Roles/components/ConditionsModal.tsx packages/core/admin/admin/src/pages/Settings/pages/Roles/components/tests/ConditionsModal.test.tsx | sort)"
+          test "$actual" = "$expected"
