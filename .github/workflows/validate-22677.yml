@@ -1,0 +1,89 @@
+name: validate-22677-upgrade-semver-ranges
+
+on:
+  push:
+    branches:
+      - validation/22677-upgrade-semver-ranges
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-22677-upgrade-semver-ranges-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+  EXPECTED_SOURCE: 6817f359ca1a1c77383c060c922b88fb4c5813c3
+  BASE_SOURCE: d83af0410bf31b034b01757729f2231862ee5e87
+
+jobs:
+  upgrade:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 6817f359ca1a1c77383c060c922b88fb4c5813c3
+          fetch-depth: 16
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install pinned dependencies
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          git cat-file -e "$BASE_SOURCE^{commit}"
+          corepack enable
+          yarn install --immutable
+      - name: Build upgrade package and workspace dependencies
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: yarn nx run @strapi/upgrade:build --nx-ignore-cycles --parallel=2
+      - name: Baseline negative control
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          set -euo pipefail
+          file=packages/utils/upgrade/src/modules/upgrader/upgrader.ts
+          git show "$BASE_SOURCE:$file" > "$file"
+          set +e
+          yarn workspace @strapi/upgrade test:unit --runInBand src/modules/upgrader/__tests__/upgrader-semver-ranges.test.ts
+          baseline_status=$?
+          set -e
+          git checkout "$EXPECTED_SOURCE" -- "$file"
+          if [ "$baseline_status" -eq 0 ]; then
+            echo "Regression unexpectedly passes on develop baseline"
+            exit 1
+          fi
+      - name: Focused regression
+        run: yarn workspace @strapi/upgrade test:unit --runInBand src/modules/upgrader/__tests__/upgrader-semver-ranges.test.ts
+      - name: Full upgrade unit suite
+        run: yarn workspace @strapi/upgrade test:unit --runInBand
+      - name: Upgrade TypeScript
+        run: yarn workspace @strapi/upgrade test:ts
+      - name: Upgrade lint
+        run: yarn workspace @strapi/upgrade lint
+      - name: Changed-file formatting
+        run: >-
+          yarn prettier --check
+          packages/utils/upgrade/src/modules/upgrader/upgrader.ts
+          packages/utils/upgrade/src/modules/upgrader/__tests__/upgrader-semver-ranges.test.ts
+      - name: Verify exact source and focused diff
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          git diff --exit-code
+          git diff --cached --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          git diff --check "$BASE_SOURCE" HEAD
+          actual="$(git diff --name-only "$BASE_SOURCE" HEAD | sort)"
+          expected="$(printf '%s\n' \
+            packages/utils/upgrade/src/modules/upgrader/upgrader.ts \
+            packages/utils/upgrade/src/modules/upgrader/__tests__/upgrader-semver-ranges.test.ts | sort)"
+          test "$actual" = "$expected"
