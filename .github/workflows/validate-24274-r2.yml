@@ -25,7 +25,7 @@ jobs:
       - name: Checkout exact candidate
         uses: actions/checkout@v4
         with:
-          ref: 0c4ecbfa1b3839c594fed4529a648cce95c6a95b
+          ref: 3cb400c22d95bdd9c9847c32d4c3fdec5693cd38
           fetch-depth: 0
       - name: Setup Node ${{ matrix.node }}
         uses: actions/setup-node@v4
@@ -37,7 +37,7 @@ jobs:
       - name: Install dependencies
         run: yarn install --immutable
       - name: Verify exact candidate
-        run: test "$(git rev-parse HEAD)" = "0c4ecbfa1b3839c594fed4529a648cce95c6a95b"
+        run: test "$(git rev-parse HEAD)" = "3cb400c22d95bdd9c9847c32d4c3fdec5693cd38"
       - name: Build Content Type Builder and workspace dependencies
         env:
           NODE_OPTIONS: --max-old-space-size=6144
@@ -83,7 +83,7 @@ jobs:
         run: yarn prettier --check packages/core/content-type-builder/admin/src/components/AIChat/lib/transforms/schemas/toCTB.ts packages/core/content-type-builder/admin/src/components/AIChat/lib/transforms/schemas/tests/toCTB.enumeration.test.ts
       - name: Verify clean candidate tree
         run: |
-          test "$(git rev-parse HEAD)" = "0c4ecbfa1b3839c594fed4529a648cce95c6a95b"
+          test "$(git rev-parse HEAD)" = "3cb400c22d95bdd9c9847c32d4c3fdec5693cd38"
           git diff --exit-code
           git diff --cached --exit-code
           test -z "$(git ls-files --others --exclude-standard)"
