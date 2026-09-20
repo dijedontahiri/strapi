@@ -1,0 +1,131 @@
+name: Validate #27246 relation create sentinel text transition
+
+on:
+  push:
+    branches:
+      - validate/27246-create-sentinel-r4-20260920
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-27246-create-sentinel-r4-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+  SOURCE_SHA: d83af0410bf31b034b01757729f2231862ee5e87
+  RECIPE_SHA: 90267da659c965011bddad3ec35cd7decc29a500
+
+jobs:
+  probe:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: d83af0410bf31b034b01757729f2231862ee5e87
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22
+      - name: Retrieve regression recipe
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git fetch --no-tags origin "$RECIPE_SHA" --depth=1
+          git show "$RECIPE_SHA:.github/validation/relation-creation.py" > "$RUNNER_TEMP/relation-creation.py"
+      - name: Install and build
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: |
+          corepack enable
+          yarn install --immutable
+          yarn nx run @strapi/content-manager:build --nx-ignore-cycles --parallel=2
+      - name: Add regression coverage
+        run: |
+          python3 "$RUNNER_TEMP/relation-creation.py" tests
+          yarn prettier --write packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/tests/RelationCreation.test.tsx
+      - name: Prove current develop fails the exact regression family
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          yarn workspace @strapi/content-manager test:front --runInBand --testPathPattern=Relations/tests/RelationCreation.test.tsx --json --outputFile=/tmp/before.json >/tmp/before.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/before.log
+          test "$status" -eq 1
+          node <<'NODE'
+          const r=require('/tmp/before.json');
+          const cases=r.testResults.flatMap(t=>t.assertionResults);
+          const creation=cases.filter(t=>t.fullName.includes('without connecting text'));
+          const numeric=cases.filter(t=>t.fullName.includes('numeric label'));
+          if (cases.length !== 10 || creation.length !== 5 || numeric.length !== 2 || r.numPassedTests !== 3 || r.numFailedTests !== 7) {
+            throw new Error(`unexpected baseline counts: ${JSON.stringify({cases:cases.length, creation:creation.length, numeric:numeric.length, passed:r.numPassedTests, failed:r.numFailedTests})}`);
+          }
+          if (!creation.every(t=>t.status==='failed' && t.failureMessages.some(m=>m.includes("You've tried to add a relation")))) {
+            throw new Error('creation failures did not reproduce expected unknown-relation guard');
+          }
+          if (!numeric.every(t=>t.status==='failed' && t.failureMessages.some(m=>m.includes('Received:') && m.includes('[1]')))) {
+            throw new Error('numeric-label failures did not reproduce accidental connection');
+          }
+          NODE
+      - name: Apply create sentinel text-transition candidate
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx')
+          s=p.read_text()
+          replacements=[
+            ("  const [textValue, setTextValue] = React.useState<string | undefined>('');", "  const [textValue, setTextValue] = React.useState<string | undefined>('');\n  const textValueRef = React.useRef<string | undefined>('');\n  const creatingRelationValue = React.useRef<string | undefined>();"),
+            ("  React.useLayoutEffect(() => {\n    setTextValue('');\n  }, [fieldValue]);", "  React.useLayoutEffect(() => {\n    textValueRef.current = '';\n    setTextValue('');\n  }, [fieldValue]);"),
+            ("          onCreateOption={() => {\n            if (canCreate) {", "          onCreateOption={() => {\n            creatingRelationValue.current = textValueRef.current;\n            if (canCreate) {"),
+            ("          onOpenChange={() => {\n            handleSearch(textValue ?? '');", "          onOpenChange={(open) => {\n            if (open) {\n              creatingRelationValue.current = undefined;\n            }\n            handleSearch(textValueRef.current ?? '');"),
+            ("          onChange={handleChange}\n          onTextValueChange={(text) => {\n            setTextValue(text);", "          onChange={(relationId) => {\n            const currentTextValue = textValueRef.current;\n\n            queueMicrotask(() => {\n              if (\n                relationId === creatingRelationValue.current &&\n                textValueRef.current === currentTextValue\n              ) {\n                return;\n              }\n\n              handleChange(relationId);\n            });\n          }}\n          onTextValueChange={(text) => {\n            textValueRef.current = text;\n            setTextValue(text);")
+          ]
+          for old,new in replacements:
+              if s.count(old) != 1:
+                  raise SystemExit(f'marker missing/ambiguous: {old!r}')
+              s=s.replace(old,new,1)
+          p.write_text(s)
+          PY
+          yarn prettier --write packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx
+      - name: Run relation creation and existing relation suites
+        id: targeted
+        shell: bash
+        run: |
+          set +e
+          yarn workspace @strapi/content-manager test:front --runInBand --testPathPattern=FormInputs/Relations/tests --json --outputFile=/tmp/after.json >/tmp/after.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/after.log
+          echo "$status" > /tmp/after.status
+      - name: Upload targeted test evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: relation-targeted-evidence
+          path: |
+            /tmp/after.json
+            /tmp/after.log
+            /tmp/after.status
+          if-no-files-found: error
+          retention-days: 1
+      - name: Require targeted suite success
+        run: test "$(cat /tmp/after.status)" -eq 0
+      - name: Run complete content-manager frontend suite
+        run: yarn workspace @strapi/content-manager test:front --runInBand
+      - name: Type-check content-manager frontend
+        run: yarn workspace @strapi/content-manager test:ts:front
+      - name: Lint content-manager
+        run: yarn workspace @strapi/content-manager lint
+      - name: Check candidate formatting and scope
+        run: |
+          yarn prettier --check packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/tests/RelationCreation.test.tsx
+          git diff --check
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
