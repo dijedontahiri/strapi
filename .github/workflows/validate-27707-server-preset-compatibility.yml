@@ -1,0 +1,85 @@
+name: Validate PR 27707 server preset compatibility
+
+on:
+  push:
+    branches:
+      - validate/27707-server-preset-compatibility-20260920
+
+permissions:
+  contents: read
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+  CANDIDATE_SHA: e92421a40464d88eedc62e56e5eebf913a965c93
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: e92421a40464d88eedc62e56e5eebf913a965c93
+          fetch-depth: 8
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install pinned project dependencies
+        run: |
+          if ! command -v corepack >/dev/null 2>&1; then
+            npm install --global corepack
+          fi
+          corepack enable
+          yarn install --immutable
+      - name: Record compiler and runtime versions
+        run: |
+          yarn node -e "const {createRequire} = require('node:module'); const r = createRequire(process.cwd() + '/packages/utils/typescript/package.json'); const version = r('typescript/package.json').version; const pinned = r('./package.json').dependencies.typescript; console.log(JSON.stringify({node: process.version, typescript: version, pinned})); if (version !== pinned) process.exit(1);"
+      - name: Prove the compatibility regression against the original PR
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          set -euo pipefail
+          config=packages/utils/typescript/tsconfigs/server.json
+          trap 'git restore --source="$CANDIDATE_SHA" -- "$config"' EXIT
+          git show a8f211d2b5cd016d1ac415806b875ea4dc8bce8f:"$config" > "$config"
+          set +e
+          yarn workspace @strapi/typescript-utils test:unit --runInBand --testPathPattern=server-config.test.ts --json --outputFile="$RUNNER_TEMP/strapi-27707-red.json"
+          status=$?
+          set -e
+          test "$status" -eq 1
+          node <<'NODE'
+          const fs = require('node:fs');
+          const assert = require('node:assert/strict');
+          const report = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/strapi-27707-red.json', 'utf8'));
+          assert.equal(report.numRuntimeErrorTestSuites, 0);
+          assert.equal(report.numFailedTests, 1);
+          assert.equal(report.numPassedTests, 2);
+          const failures = report.testResults.flatMap((suite) => suite.assertionResults.filter((test) => test.status === 'failed'));
+          assert.equal(failures.length, 1);
+          assert.equal(failures[0].fullName, 'server tsconfig preserves non-strict checking for existing consumers');
+          console.log('EXPECTED_REGRESSION_FAILURE_CONFIRMED: inherited compatibility fails; both explicit overrides pass.');
+          NODE
+      - name: Run complete package unit suite
+        run: |
+          yarn workspace @strapi/typescript-utils test:unit --runInBand --json --outputFile="$RUNNER_TEMP/strapi-27707-green.json"
+          node -e "const fs = require('node:fs'); const r = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/strapi-27707-green.json', 'utf8')); console.log('PACKAGE_TEST_RESULT', JSON.stringify({suites: r.numPassedTestSuites, passed: r.numPassedTests, failed: r.numFailedTests, pending: r.numPendingTests}));"
+      - name: Type-check package
+        run: yarn workspace @strapi/typescript-utils test:ts
+      - name: Lint package
+        run: yarn workspace @strapi/typescript-utils lint
+      - name: Build package
+        run: yarn nx run @strapi/typescript-utils:build --nx-ignore-cycles
+      - name: Check changed-file formatting
+        run: yarn prettier --check packages/utils/typescript/tsconfigs/server.json packages/utils/typescript/src/__tests__/server-config.test.ts
+      - name: Verify unchanged public preset and exact candidate source
+        run: |
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          git diff --exit-code 5fcd743f4965ed3efef854b6c36b60bee8fae29b -- packages/utils/typescript/tsconfigs/server.json
+          git diff --exit-code "$CANDIDATE_SHA"
+          echo "EXACT_CANDIDATE_VERIFIED $CANDIDATE_SHA"
