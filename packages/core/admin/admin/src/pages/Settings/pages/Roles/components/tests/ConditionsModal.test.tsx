@@ -1,4 +1,4 @@
-import { getNewStateFromChangedValues } from './ConditionsModal';
+import { getNewStateFromChangedValues } from '../ConditionsModal';
 
 describe('getNewStateFromChangedValues', () => {
   test('keeps condition state in its category bucket', () => {
