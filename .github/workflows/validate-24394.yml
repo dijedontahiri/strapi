@@ -25,7 +25,7 @@ jobs:
       - name: Checkout exact candidate
         uses: actions/checkout@v4
         with:
-          ref: 9bf70558e673e88241acdf28bc538b398e3e889b
+          ref: 16becde58afab5c16d15b80ff6f9db35e842dcfc
           fetch-depth: 0
       - name: Setup Node ${{ matrix.node }}
         uses: actions/setup-node@v4
@@ -37,7 +37,7 @@ jobs:
       - name: Install dependencies
         run: yarn install --immutable
       - name: Verify exact candidate
-        run: test "$(git rev-parse HEAD)" = "9bf70558e673e88241acdf28bc538b398e3e889b"
+        run: test "$(git rev-parse HEAD)" = "16becde58afab5c16d15b80ff6f9db35e842dcfc"
       - name: Build core and workspace dependencies
         env:
           NODE_OPTIONS: --max-old-space-size=6144
@@ -83,7 +83,7 @@ jobs:
         run: yarn prettier --check packages/core/core/src/core-api/routes/validation/mappers.ts packages/core/core/src/core-api/routes/validation/__tests__/mappers.test.ts
       - name: Verify clean candidate tree
         run: |
-          test "$(git rev-parse HEAD)" = "9bf70558e673e88241acdf28bc538b398e3e889b"
+          test "$(git rev-parse HEAD)" = "16becde58afab5c16d15b80ff6f9db35e842dcfc"
           git diff --exit-code
           git diff --cached --exit-code
           test -z "$(git ls-files --others --exclude-standard)"
