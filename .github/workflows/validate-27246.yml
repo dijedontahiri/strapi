@@ -1,0 +1,90 @@
+name: Validate issue 27246 candidate
+
+on:
+  push:
+    branches:
+      - validation/27246-create-value-b4650d0
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: b4650d0b9ec49f95fd81901bcba90cf481012fe8
+          fetch-depth: 0
+
+      - name: Verify exact candidate
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "b4650d0b9ec49f95fd81901bcba90cf481012fe8"
+          test "$(git merge-base HEAD d83af0410bf31b034b01757729f2231862ee5e87)" = "d83af0410bf31b034b01757729f2231862ee5e87"
+
+      - name: Setup Node ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      - name: Build content-manager
+        run: yarn workspace @strapi/content-manager build
+
+      - name: Focused regression
+        run: >-
+          yarn workspace @strapi/content-manager test:front --runInBand
+          admin/src/pages/EditView/components/FormInputs/Relations/tests/Relations.create.test.tsx
+
+      - name: Content-manager frontend suite
+        run: yarn workspace @strapi/content-manager test:front --runInBand
+
+      - name: Content-manager TypeScript
+        run: yarn workspace @strapi/content-manager test:ts:front
+
+      - name: Content-manager lint
+        run: yarn workspace @strapi/content-manager lint
+
+      - name: Prettier
+        run: >-
+          yarn prettier --check
+          packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx
+          packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/tests/Relations.create.test.tsx
+
+      - name: Baseline regression must fail for the intended assertion
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          source_file='packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx'
+          test_file='admin/src/pages/EditView/components/FormInputs/Relations/tests/Relations.create.test.tsx'
+          git show d83af0410bf31b034b01757729f2231862ee5e87:"$source_file" > "$source_file"
+          set +e
+          yarn workspace @strapi/content-manager test:front --runInBand "$test_file" 2>&1 | tee /tmp/baseline.log
+          status=${PIPESTATUS[0]}
+          set -e
+          test "$status" -ne 0
+          grep -F "You've tried to add a relation with an id that does not exist" /tmp/baseline.log
+          git checkout b4650d0b9ec49f95fd81901bcba90cf481012fe8 -- "$source_file"
+          yarn workspace @strapi/content-manager test:front --runInBand "$test_file"
+
+      - name: Verify final tree and diff
+        shell: bash
+        run: |
+          git diff --exit-code
+          test "$(git rev-parse HEAD)" = "b4650d0b9ec49f95fd81901bcba90cf481012fe8"
+          changed="$(git diff --name-only d83af0410bf31b034b01757729f2231862ee5e87...HEAD)"
+          printf '%s\n' "$changed"
+          test "$(printf '%s\n' "$changed" | wc -l | tr -d ' ')" -eq 2
