@@ -8,6 +8,16 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: validate-27246-create-value-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+  EXPECTED_SOURCE: b4650d0b9ec49f95fd81901bcba90cf481012fe8
+  BASE_SOURCE: d83af0410bf31b034b01757729f2231862ee5e87
+
 jobs:
   validate:
     if: github.repository == 'dijedontahiri/strapi'
@@ -19,72 +29,92 @@ jobs:
         node: [22, 24, 26]
     steps:
       - name: Checkout exact candidate
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: b4650d0b9ec49f95fd81901bcba90cf481012fe8
-          fetch-depth: 0
-
-      - name: Verify exact candidate
-        shell: bash
-        run: |
-          test "$(git rev-parse HEAD)" = "b4650d0b9ec49f95fd81901bcba90cf481012fe8"
-          test "$(git merge-base HEAD d83af0410bf31b034b01757729f2231862ee5e87)" = "d83af0410bf31b034b01757729f2231862ee5e87"
+          fetch-depth: 16
+          persist-credentials: false
 
       - name: Setup Node ${{ matrix.node }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: ${{ matrix.node }}
 
-      - name: Enable Corepack
-        run: corepack enable
+      - name: Install pinned dependencies
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          git cat-file -e "$BASE_SOURCE^{commit}"
+          corepack enable
+          yarn install --immutable
 
-      - name: Install dependencies
-        run: yarn install --immutable
+      - name: Build content-manager and workspace dependencies
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: yarn nx run @strapi/content-manager:build --nx-ignore-cycles --parallel=2
 
-      - name: Build content-manager
-        run: yarn workspace @strapi/content-manager build
+      - name: Prove regression against current develop
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_file='packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx'
+          test_pattern='Relations.create.test.tsx'
+          cp "$source_file" /tmp/fixed-relations.tsx
+          trap 'cp /tmp/fixed-relations.tsx "$source_file"' EXIT
+          git show "$BASE_SOURCE:$source_file" > "$source_file"
+          set +e
+          yarn workspace @strapi/content-manager test:front --runInBand --testPathPattern="$test_pattern" --json --outputFile=/tmp/27246-before.json
+          status=$?
+          set -e
+          test "$status" -eq 1
+          node - <<'NODE'
+          const result = require('/tmp/27246-before.json');
+          if (
+            result.numFailedTests !== 1 ||
+            result.numPassedTests !== 0 ||
+            result.numTotalTests !== 1 ||
+            result.numTotalTestSuites !== 1
+          ) {
+            throw new Error(`Unexpected baseline result: ${JSON.stringify({
+              failed: result.numFailedTests,
+              passed: result.numPassedTests,
+              total: result.numTotalTests,
+              suites: result.numTotalTestSuites,
+            })}`);
+          }
+          NODE
+          cp /tmp/fixed-relations.tsx "$source_file"
+          trap - EXIT
 
       - name: Focused regression
-        run: >-
-          yarn workspace @strapi/content-manager test:front --runInBand
-          admin/src/pages/EditView/components/FormInputs/Relations/tests/Relations.create.test.tsx
+        run: yarn workspace @strapi/content-manager test:front --runInBand --testPathPattern=Relations.create.test.tsx
 
-      - name: Content-manager frontend suite
+      - name: Complete content-manager frontend suite
         run: yarn workspace @strapi/content-manager test:front --runInBand
 
-      - name: Content-manager TypeScript
+      - name: Content-manager frontend TypeScript
         run: yarn workspace @strapi/content-manager test:ts:front
 
       - name: Content-manager lint
         run: yarn workspace @strapi/content-manager lint
 
-      - name: Prettier
+      - name: Changed-file formatting
         run: >-
           yarn prettier --check
           packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx
           packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/tests/Relations.create.test.tsx
 
-      - name: Baseline regression must fail for the intended assertion
-        if: matrix.node == 22
+      - name: Verify exact source and focused diff
         shell: bash
         run: |
-          source_file='packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx'
-          test_file='admin/src/pages/EditView/components/FormInputs/Relations/tests/Relations.create.test.tsx'
-          git show d83af0410bf31b034b01757729f2231862ee5e87:"$source_file" > "$source_file"
-          set +e
-          yarn workspace @strapi/content-manager test:front --runInBand "$test_file" 2>&1 | tee /tmp/baseline.log
-          status=${PIPESTATUS[0]}
-          set -e
-          test "$status" -ne 0
-          grep -F "You've tried to add a relation with an id that does not exist" /tmp/baseline.log
-          git checkout b4650d0b9ec49f95fd81901bcba90cf481012fe8 -- "$source_file"
-          yarn workspace @strapi/content-manager test:front --runInBand "$test_file"
-
-      - name: Verify final tree and diff
-        shell: bash
-        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
           git diff --exit-code
-          test "$(git rev-parse HEAD)" = "b4650d0b9ec49f95fd81901bcba90cf481012fe8"
-          changed="$(git diff --name-only d83af0410bf31b034b01757729f2231862ee5e87...HEAD)"
-          printf '%s\n' "$changed"
-          test "$(printf '%s\n' "$changed" | wc -l | tr -d ' ')" -eq 2
+          git diff --cached --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          git diff --check "$BASE_SOURCE" HEAD
+          actual="$(git diff --name-only "$BASE_SOURCE" HEAD | sort)"
+          expected="$(printf '%s\n' \
+            packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx \
+            packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/tests/Relations.create.test.tsx | sort)"
+          test "$actual" = "$expected"
