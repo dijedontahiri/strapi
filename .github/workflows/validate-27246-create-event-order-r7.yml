@@ -1,0 +1,175 @@
+name: Validate #27246 relation create event ordering
+
+on:
+  push:
+    branches:
+      - validate/27246-create-event-order-r7-20260921
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-27246-create-event-order-r7-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+  SOURCE_SHA: 142d9c6b31f35766e390e9ff78595d83f5b97904
+
+jobs:
+  validate:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - name: Check out validation harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: validate/27246-create-event-order-r7-20260921
+          path: harness
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out exact upstream source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: strapi/strapi
+          ref: 142d9c6b31f35766e390e9ff78595d83f5b97904
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Verify exact source
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git hash-object packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx)" = "12a0d4669e7e90dc2607261249d8eb918e56eb0d"
+
+      - name: Install dependencies
+        working-directory: source
+        run: |
+          corepack enable
+          yarn install --immutable
+
+      - name: Build content-manager dependencies
+        working-directory: source
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: yarn nx run @strapi/content-manager:build --nx-ignore-cycles --parallel=2
+
+      - name: Add exact regression coverage
+        working-directory: source
+        run: |
+          python3 ../harness/.github/validation/relation-creation.py tests
+          yarn prettier --write packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/tests/RelationCreation.test.tsx
+
+      - name: Prove upstream fails regression
+        if: matrix.node == 22
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          yarn workspace @strapi/content-manager test:front --runInBand --testPathPattern=Relations/tests/RelationCreation.test.tsx --json --outputFile=/tmp/before.json >/tmp/before.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/before.log
+          test "$status" -eq 1
+          node <<'NODE'
+          const r = require('/tmp/before.json');
+          const cases = r.testResults.flatMap((t) => t.assertionResults);
+          const creation = cases.filter((t) => t.fullName.includes('without connecting text'));
+          const numeric = cases.filter((t) => t.fullName.includes('numeric label'));
+          if (cases.length !== 10 || creation.length !== 5 || numeric.length !== 2 || r.numPassedTests !== 3 || r.numFailedTests !== 7) {
+            throw new Error(`unexpected baseline counts: ${JSON.stringify({ cases: cases.length, creation: creation.length, numeric: numeric.length, passed: r.numPassedTests, failed: r.numFailedTests })}`);
+          }
+          if (!creation.every((t) => t.status === 'failed' && t.failureMessages.some((m) => m.includes("You've tried to add a relation")))) {
+            throw new Error('creation failures did not reproduce expected unknown-relation guard');
+          }
+          if (!numeric.every((t) => t.status === 'failed' && t.failureMessages.some((m) => m.includes('Received:') && m.includes('[1]')))) {
+            throw new Error('numeric-label failures did not reproduce accidental connection');
+          }
+          NODE
+
+      - name: Apply create-event candidate
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          p = Path('packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx')
+          expected = '12a0d4669e7e90dc2607261249d8eb918e56eb0d'
+          actual = subprocess.check_output(['git', 'hash-object', str(p)], text=True).strip()
+          if actual != expected:
+              raise SystemExit(f'unexpected source blob: {actual}')
+
+          s = p.read_text()
+          replacements = [
+            (
+              "  const [textValue, setTextValue] = React.useState<string | undefined>('');",
+              "  const [textValue, setTextValue] = React.useState<string | undefined>('');\n  const createRelationValue = React.useRef<string>();"
+            ),
+            (
+              "          onCreateOption={() => {\n            if (canCreate) {\n              dispatch({",
+              "          onCreateOption={() => {\n            if (canCreate) {\n              const value = textValue ?? '';\n              createRelationValue.current = value;\n              window.setTimeout(() => {\n                if (createRelationValue.current === value) {\n                  createRelationValue.current = undefined;\n                }\n              });\n\n              dispatch({"
+            ),
+            (
+              "          onChange={handleChange}",
+              "          onChange={(relationId) => {\n            if (relationId !== textValue) {\n              handleChange(relationId);\n              return;\n            }\n\n            queueMicrotask(() => {\n              if (createRelationValue.current === relationId) {\n                createRelationValue.current = undefined;\n                return;\n              }\n\n              handleChange(relationId);\n            });\n          }}"
+            ),
+          ]
+          for old, new in replacements:
+              if s.count(old) != 1:
+                  raise SystemExit(f'marker missing/ambiguous: {old!r}')
+              s = s.replace(old, new, 1)
+          p.write_text(s)
+          PY
+          yarn prettier --write packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx
+
+      - name: Run focused relation regression
+        working-directory: source
+        run: yarn workspace @strapi/content-manager test:front --runInBand --testPathPattern=Relations/tests/RelationCreation.test.tsx
+
+      - name: Run complete relation suites
+        working-directory: source
+        run: yarn workspace @strapi/content-manager test:front --runInBand --testPathPattern=FormInputs/Relations/tests
+
+      - name: Run complete content-manager frontend suite
+        working-directory: source
+        run: yarn workspace @strapi/content-manager test:front --runInBand
+
+      - name: Type-check content-manager frontend
+        working-directory: source
+        run: yarn workspace @strapi/content-manager test:ts:front
+
+      - name: Lint content-manager
+        working-directory: source
+        run: yarn workspace @strapi/content-manager lint
+
+      - name: Check formatting and exact scope
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          yarn prettier --check packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/tests/RelationCreation.test.tsx
+          git diff --check
+          mapfile -t changed < <(git status --short | sed -E 's/^...//')
+          printf '%s\n' "${changed[@]}"
+          test "${#changed[@]}" -eq 2
+          printf '%s\n' "${changed[@]}" | grep -Fx 'packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx'
+          printf '%s\n' "${changed[@]}" | grep -Fx 'packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/tests/RelationCreation.test.tsx'
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
