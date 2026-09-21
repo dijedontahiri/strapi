@@ -739,6 +739,25 @@ const RelationModalWithContext = ({
   const handleSearch = async (search: string) => {
     setSearchParams((s) => ({ ...s, _q: search, page: 1 }));
   };
+
+  const handleRelationChange = (relationId?: string) => {
+    /**
+     * The design-system creatable Combobox emits its current text through onChange when the
+     * create item is activated. Relation selection only accepts IDs from the available options;
+     * the create flow itself is handled by onCreateOption below.
+     */
+    const isCreateOptionValue =
+      Boolean(relationId) &&
+      relationId === textValue &&
+      !options.some((option) => option.id.toString() === relationId);
+
+    if (isCreateOptionValue) {
+      return;
+    }
+
+    handleChange(relationId);
+  };
+
   return (
     <RelationModalRenderer>
       {({ dispatch }) => (
@@ -793,7 +812,7 @@ const RelationModalWithContext = ({
           })}
           onLoadMore={handleLoadMore}
           textValue={textValue}
-          onChange={handleChange}
+          onChange={handleRelationChange}
           onTextValueChange={(text) => {
             setTextValue(text);
           }}
