@@ -1,0 +1,77 @@
+name: Validate 27084 grid fix
+
+on:
+  push:
+    branches:
+      - validate/27084-grid-node-env-test-r1-20260922
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: 78e62b517a91d8345a394cf1801afecfe966231b
+          fetch-depth: 2
+
+      - name: Setup Node ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      - name: Prove regression fails on develop implementation
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          git checkout 38ed6a5e2b7972b41472ceffafcdc0ab57426964 -- packages/core/content-manager/admin/src/pages/EditView/components/FormLayout.tsx
+          if yarn workspace @strapi/content-manager test:front --runInBand admin/src/pages/EditView/components/tests/FormLayout.test.ts; then
+            echo "Expected focused regression to fail with the develop implementation"
+            exit 1
+          fi
+          git checkout 78e62b517a91d8345a394cf1801afecfe966231b -- packages/core/content-manager/admin/src/pages/EditView/components/FormLayout.tsx
+
+      - name: Run focused regression
+        run: yarn workspace @strapi/content-manager test:front --runInBand admin/src/pages/EditView/components/tests/FormLayout.test.ts
+
+      - name: Build affected package
+        run: yarn workspace @strapi/content-manager build
+
+      - name: Run complete content-manager frontend suite
+        run: yarn workspace @strapi/content-manager test:front --runInBand
+
+      - name: Typecheck affected frontend
+        run: yarn workspace @strapi/content-manager test:ts:front
+
+      - name: Lint affected package
+        run: yarn workspace @strapi/content-manager lint
+
+      - name: Check formatting
+        run: yarn prettier --check packages/core/content-manager/admin/src/pages/EditView/components/FormLayout.tsx packages/core/content-manager/admin/src/pages/EditView/components/tests/FormLayout.test.ts
+
+      - name: Verify exact product diff
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "78e62b517a91d8345a394cf1801afecfe966231b"
+          mapfile -t files < <(git diff --name-only 38ed6a5e2b7972b41472ceffafcdc0ab57426964..HEAD)
+          test "${#files[@]}" -eq 2
+          printf '%s\n' "${files[@]}" | grep -Fx 'packages/core/content-manager/admin/src/pages/EditView/components/FormLayout.tsx'
+          printf '%s\n' "${files[@]}" | grep -Fx 'packages/core/content-manager/admin/src/pages/EditView/components/tests/FormLayout.test.ts'
+          git diff --check 38ed6a5e2b7972b41472ceffafcdc0ab57426964..HEAD
+          git status --porcelain
+          test -z "$(git status --porcelain)"
