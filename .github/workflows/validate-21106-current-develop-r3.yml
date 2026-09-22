@@ -1,0 +1,106 @@
+name: Validate #21106 against current develop
+
+on:
+  push:
+    branches:
+      - validate-harness/21106-current-develop-r3-20260922
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-21106-current-develop-r3-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+  SOURCE_SHA: 718be9dbe1e18faef7e4c72aff41f8c3e01837ac
+  BASE_SHA: c71ae4bb75d293c00fa800dc32eb58ee5c6f95b3
+
+jobs:
+  validate:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: dijedontahiri/strapi
+          ref: 718be9dbe1e18faef7e4c72aff41f8c3e01837ac
+          fetch-depth: 4
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Verify exact candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git cat-file -e "$BASE_SHA^{commit}"
+          test "$(git diff --name-only "$BASE_SHA" HEAD | sort)" = "$(printf '%s\n' packages/core/content-type-builder/admin/src/components/FormModal/reducer.ts packages/core/content-type-builder/admin/src/components/FormModal/tests/reducer.uid.test.ts | sort)"
+          git diff --check "$BASE_SHA" HEAD
+
+      - name: Install dependencies
+        run: |
+          corepack enable
+          yarn install --immutable
+
+      - name: Build content-type-builder dependencies
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: yarn nx run @strapi/content-type-builder:build --nx-ignore-cycles --parallel=2
+
+      - name: Prove current develop fails both regressions
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=packages/core/content-type-builder/admin/src/components/FormModal/reducer.ts
+          cp "$source" /tmp/fixed-reducer.ts
+          git show "$BASE_SHA:$source" > "$source"
+          set +e
+          yarn workspace @strapi/content-type-builder test:front --runInBand --testPathPattern=reducer.uid.test.ts --json --outputFile=/tmp/before.json >/tmp/before.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/before.log
+          test "$status" -eq 1
+          node <<'NODE'
+          const result = require('/tmp/before.json');
+          if (result.numFailedTests !== 2 || result.numPassedTests !== 0 || result.numTotalTests !== 2 || result.numTotalTestSuites !== 1) {
+            throw new Error(`unexpected baseline: ${JSON.stringify({failed: result.numFailedTests, passed: result.numPassedTests, total: result.numTotalTests, suites: result.numTotalTestSuites})}`);
+          }
+          NODE
+          cp /tmp/fixed-reducer.ts "$source"
+          git diff --exit-code
+
+      - name: Run focused regression
+        run: yarn workspace @strapi/content-type-builder test:front --runInBand --testPathPattern=reducer.uid.test.ts
+
+      - name: Run complete content-type-builder frontend suite
+        run: yarn workspace @strapi/content-type-builder test:front --runInBand
+
+      - name: Type-check content-type-builder frontend
+        run: yarn workspace @strapi/content-type-builder test:ts:front
+
+      - name: Lint content-type-builder
+        run: yarn workspace @strapi/content-type-builder lint
+
+      - name: Check formatting and clean exact tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          yarn prettier --check packages/core/content-type-builder/admin/src/components/FormModal/reducer.ts packages/core/content-type-builder/admin/src/components/FormModal/tests/reducer.uid.test.ts
+          git diff --check
+          git diff --exit-code
+          git diff --cached --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
