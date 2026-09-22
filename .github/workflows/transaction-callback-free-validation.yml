@@ -1,0 +1,183 @@
+name: Transaction callback-free finalizer validation
+
+on:
+  push:
+    branches:
+      - validate/27704-callback-free-finalizers-20260922
+
+permissions:
+  contents: read
+
+concurrency:
+  group: transaction-callback-free-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+  SOURCE_SHA: ba85e8838f6b170fcc5bb495dbe57ded2f3427fb
+  BASELINE_SHA: 1b872228ec708b78802ef160bc7b4f408dfd5a83
+
+jobs:
+  database-unit:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 5
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Verify exact source
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+      - name: Install pinned dependencies
+        run: |
+          corepack enable
+          yarn install --immutable
+      - name: Build database and dependencies
+        run: yarn nx run @strapi/database:build --nx-ignore-cycles --parallel=2
+      - name: Prove callback-free regression on the reviewed head
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          source=packages/core/database/src/transaction-context.ts
+          trap 'git restore -- "$source"' EXIT
+          git show "$BASELINE_SHA:$source" > "$source"
+          set +e
+          yarn workspace @strapi/database test:unit --runInBand --testPathPattern=transaction-callback-free-finalization.test.ts --json --outputFile=/tmp/callback-free-before.json
+          status=$?
+          set -e
+          test "$status" -eq 1
+          node - <<'NODE'
+          const r = require('/tmp/callback-free-before.json');
+          if (r.numFailedTests !== 4 || r.numPassedTests !== 0 || r.numTotalTestSuites !== 1) {
+            throw new Error(`Unexpected baseline result: ${r.numFailedTests} failed, ${r.numPassedTests} passed, ${r.numTotalTestSuites} suites`);
+          }
+          console.log('Baseline reproduced: 4 callback-free finalizer arbitration failures');
+          NODE
+          git restore -- "$source"
+          yarn workspace @strapi/database build:code
+          trap - EXIT
+      - name: Focused callback-free regression
+        run: yarn workspace @strapi/database test:unit --runInBand --testPathPattern=transaction-callback-free-finalization.test.ts
+      - name: Complete database unit suite
+        run: yarn workspace @strapi/database test:unit --runInBand
+      - name: Database type check
+        run: yarn workspace @strapi/database test:ts
+      - name: Database lint
+        run: yarn workspace @strapi/database lint
+      - name: Changed-file formatting
+        shell: bash
+        run: |
+          files=(
+            packages/core/database/src/transaction-context.ts
+            packages/core/database/src/__tests__/transaction-callback-free-finalization.test.ts
+            tests/api/core/database/transactions-callback-free.test.api.js
+          )
+          yarn prettier --check "${files[@]}"
+      - name: Verify clean exact candidate
+        run: |
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git diff --exit-code
+
+  sql-integration:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [sqlite, postgres, mysql]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: strapi
+          POSTGRES_PASSWORD: strapi
+          POSTGRES_DB: strapi_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U strapi -d strapi_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: strapi_test
+          MYSQL_USER: strapi
+          MYSQL_PASSWORD: strapi
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 5
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22
+      - name: Verify exact source
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+      - name: Install pinned dependencies
+        run: |
+          corepack enable
+          yarn install --immutable
+      - name: Build real Strapi API runtime
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: yarn build:code --parallel=2
+      - name: Prepare PostgreSQL schema
+        if: matrix.database == 'postgres'
+        env:
+          PGPASSWORD: strapi
+        run: psql -h 127.0.0.1 -U strapi -d strapi_test -c 'CREATE SCHEMA IF NOT EXISTS myschema;'
+      - name: Prove callback-free SQL regression on the reviewed head
+        shell: bash
+        env:
+          TEST_DATABASE: ${{ matrix.database }}
+        run: |
+          source=packages/core/database/src/transaction-context.ts
+          trap 'git restore -- "$source"' EXIT
+          git show "$BASELINE_SHA:$source" > "$source"
+          yarn workspace @strapi/database build:code
+          set +e
+          yarn test:api --db="$TEST_DATABASE" tests/api/core/database/transactions-callback-free.test.api.js --json --outputFile=/tmp/callback-free-api-before.json
+          status=$?
+          set -e
+          test "$status" -eq 1
+          node - <<'NODE'
+          const r = require('/tmp/callback-free-api-before.json');
+          if (r.numFailedTests !== 4 || r.numPassedTests !== 0 || r.numTotalTestSuites !== 1) {
+            throw new Error(`Unexpected SQL baseline result: ${r.numFailedTests} failed, ${r.numPassedTests} passed, ${r.numTotalTestSuites} suites`);
+          }
+          console.log('SQL baseline reproduced: 4 callback-free finalizer arbitration failures');
+          NODE
+          git restore -- "$source"
+          yarn workspace @strapi/database build:code
+          trap - EXIT
+      - name: Existing transaction suites plus callback-free regressions
+        env:
+          TEST_DATABASE: ${{ matrix.database }}
+        run: |
+          yarn test:api --db="$TEST_DATABASE" tests/api/core/database/transactions --json --outputFile=/tmp/transaction-api-after.json
+      - name: Verify clean exact candidate
+        run: |
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git diff --exit-code
