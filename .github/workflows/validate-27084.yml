@@ -40,14 +40,14 @@ jobs:
         shell: bash
         run: |
           git checkout 38ed6a5e2b7972b41472ceffafcdc0ab57426964 -- packages/core/content-manager/admin/src/pages/EditView/components/FormLayout.tsx
-          if yarn workspace @strapi/content-manager test:front --runInBand admin/src/pages/EditView/components/tests/FormLayout.test.ts; then
+          if yarn workspace @strapi/content-manager test:front --runInBand --runTestsByPath packages/core/content-manager/admin/src/pages/EditView/components/tests/FormLayout.test.ts; then
             echo "Expected focused regression to fail with the develop implementation"
             exit 1
           fi
           git checkout 78e62b517a91d8345a394cf1801afecfe966231b -- packages/core/content-manager/admin/src/pages/EditView/components/FormLayout.tsx
 
       - name: Run focused regression
-        run: yarn workspace @strapi/content-manager test:front --runInBand admin/src/pages/EditView/components/tests/FormLayout.test.ts
+        run: yarn workspace @strapi/content-manager test:front --runInBand --runTestsByPath packages/core/content-manager/admin/src/pages/EditView/components/tests/FormLayout.test.ts
 
       - name: Build affected package
         run: yarn workspace @strapi/content-manager build
