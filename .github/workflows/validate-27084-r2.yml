@@ -1,0 +1,77 @@
+name: Validate 27084 grid fix r2
+
+on:
+  push:
+    branches:
+      - validate/27084-grid-node-env-test-r2-20260922
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: 43a7d2335bf3198f50d1c102786377c12e333544
+          fetch-depth: 3
+
+      - name: Setup Node ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      - name: Prove regression fails on develop implementation
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          git checkout 38ed6a5e2b7972b41472ceffafcdc0ab57426964 -- packages/core/content-manager/admin/src/pages/EditView/components/FormLayout.tsx
+          if yarn jest --config packages/core/content-manager/jest.config.front.js --runInBand --runTestsByPath packages/core/content-manager/admin/src/pages/EditView/components/tests/FormLayout.test.ts; then
+            echo "Expected focused regression to fail with the develop FormLayout implementation"
+            exit 1
+          fi
+          git checkout 43a7d2335bf3198f50d1c102786377c12e333544 -- packages/core/content-manager/admin/src/pages/EditView/components/FormLayout.tsx
+
+      - name: Run focused regression
+        run: yarn jest --config packages/core/content-manager/jest.config.front.js --runInBand --runTestsByPath packages/core/content-manager/admin/src/pages/EditView/components/tests/FormLayout.test.ts
+
+      - name: Build affected package
+        run: yarn workspace @strapi/content-manager build
+
+      - name: Run complete content-manager frontend suite
+        run: yarn workspace @strapi/content-manager test:front --runInBand
+
+      - name: Typecheck affected frontend
+        run: yarn workspace @strapi/content-manager test:ts:front
+
+      - name: Lint affected package
+        run: yarn workspace @strapi/content-manager lint
+
+      - name: Check formatting
+        run: yarn prettier --check packages/core/content-manager/admin/src/pages/EditView/components/FormLayout.tsx packages/core/content-manager/admin/src/pages/EditView/components/shouldUseResponsiveGridStyles.ts packages/core/content-manager/admin/src/pages/EditView/components/tests/FormLayout.test.ts
+
+      - name: Verify exact product diff
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "43a7d2335bf3198f50d1c102786377c12e333544"
+          mapfile -t files < <(git diff --name-only 38ed6a5e2b7972b41472ceffafcdc0ab57426964..HEAD)
+          test "${#files[@]}" -eq 3
+          printf '%s\n' "${files[@]}" | grep -Fx 'packages/core/content-manager/admin/src/pages/EditView/components/FormLayout.tsx'
+          printf '%s\n' "${files[@]}" | grep -Fx 'packages/core/content-manager/admin/src/pages/EditView/components/shouldUseResponsiveGridStyles.ts'
+          printf '%s\n' "${files[@]}" | grep -Fx 'packages/core/content-manager/admin/src/pages/EditView/components/tests/FormLayout.test.ts'
+          git diff --check 38ed6a5e2b7972b41472ceffafcdc0ab57426964..HEAD
+          test -z "$(git status --porcelain)"
