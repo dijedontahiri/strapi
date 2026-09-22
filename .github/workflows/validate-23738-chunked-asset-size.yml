@@ -9,7 +9,41 @@ permissions:
   contents: read
 
 jobs:
-  validate:
+  baseline-groups:
+    if: github.repository == 'dijedontahiri/strapi'
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: directory-engine-file
+            paths: src/directory src/engine src/file
+          - name: local-destination
+            paths: src/strapi/providers/local-destination
+          - name: local-source
+            paths: src/strapi/providers/local-source
+          - name: remote-providers
+            paths: src/strapi/providers/remote-destination src/strapi/providers/remote-source
+          - name: strapi-core
+            paths: src/strapi/__tests__ src/strapi/queries src/strapi/remote src/strapi/utils
+          - name: utils
+            paths: src/utils
+    runs-on: ubuntu-latest
+    name: baseline ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: strapi/strapi
+          ref: 142d9c6b31f35766e390e9ff78595d83f5b97904
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: corepack enable
+      - run: yarn install --immutable
+      - name: Run baseline group
+        run: yarn workspace @strapi/data-transfer test:unit --runInBand ${{ matrix.paths }}
+
+  candidate:
     if: github.repository == 'dijedontahiri/strapi'
     timeout-minutes: 60
     strategy:
@@ -17,6 +51,7 @@ jobs:
       matrix:
         node: [22, 24, 26]
     runs-on: ubuntu-latest
+    name: candidate ${{ matrix.node }}
     steps:
       - name: Check out exact candidate
         uses: actions/checkout@v4
@@ -24,18 +59,11 @@ jobs:
           repository: dijedontahiri/strapi
           ref: 470fd41e99e6dade24576f2dde20aedba0a3dbd3
           fetch-depth: 0
-
-      - name: Set up Node ${{ matrix.node }}
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-
-      - name: Enable Corepack
-        run: corepack enable
-
-      - name: Install dependencies
-        run: yarn install --immutable
-
+      - run: corepack enable
+      - run: yarn install --immutable
       - name: Verify exact candidate and scope
         shell: bash
         run: |
@@ -47,78 +75,38 @@ jobs:
             "packages/core/data-transfer/src/strapi/providers/local-source/assets.ts"
           )
           test "${#changed[@]}" -eq "${#expected[@]}"
-          for i in "${!expected[@]}"; do
-            test "${changed[$i]}" = "${expected[$i]}"
-          done
-
-      - name: Baseline focused regression
+          for i in "${!expected[@]}"; do test "${changed[$i]}" = "${expected[$i]}"; done
+      - name: Prove focused regression fails on develop
         if: matrix.node == 22
-        id: baseline-focused
+        id: negative
         continue-on-error: true
         shell: bash
         run: |
           git checkout 142d9c6b31f35766e390e9ff78595d83f5b97904 -- packages/core/data-transfer/src/strapi/providers/local-source/assets.ts
           yarn workspace @strapi/data-transfer test:unit --runInBand src/strapi/providers/local-source/__tests__/assets.test.ts -t "measures remote assets when the response has no content-length header"
-
-      - name: Negative control fails as expected
-        if: matrix.node == 22 && steps.baseline-focused.outcome == 'failure'
-        run: echo "Focused regression fails on develop as expected"
-
-      - name: Invalid negative control passed
-        if: matrix.node == 22 && steps.baseline-focused.outcome == 'success'
+      - name: Confirm negative control
+        if: matrix.node == 22 && steps.negative.outcome == 'failure'
+        run: echo "Regression fails on develop as expected"
+      - name: Reject ineffective negative control
+        if: matrix.node == 22 && steps.negative.outcome != 'failure'
         run: exit 1
-
-      - name: Baseline package unit suite
-        if: matrix.node == 22
-        id: baseline-suite
-        continue-on-error: true
-        shell: bash
-        run: |
-          git checkout 142d9c6b31f35766e390e9ff78595d83f5b97904 -- packages/core/data-transfer/src/strapi/providers/local-source/assets.ts packages/core/data-transfer/src/strapi/providers/local-source/__tests__/assets.test.ts
-          yarn workspace @strapi/data-transfer test:unit --runInBand
-
-      - name: Baseline package suite passed
-        if: matrix.node == 22 && steps.baseline-suite.outcome == 'success'
-        run: echo "Baseline package unit suite is green"
-
-      - name: Baseline package suite failed
-        if: matrix.node == 22 && steps.baseline-suite.outcome == 'failure'
-        run: echo "Baseline package unit suite is not green in this runner"
-
       - name: Restore exact candidate
         shell: bash
         run: |
-          git checkout 470fd41e99e6dade24576f2dde20aedba0a3dbd3 -- packages/core/data-transfer/src/strapi/providers/local-source/assets.ts packages/core/data-transfer/src/strapi/providers/local-source/__tests__/assets.test.ts
+          git checkout 470fd41e99e6dade24576f2dde20aedba0a3dbd3 -- packages/core/data-transfer/src/strapi/providers/local-source/assets.ts
           git diff --exit-code
-
-      - name: Run complete assets regression file
-        run: yarn workspace @strapi/data-transfer test:unit --runInBand src/strapi/providers/local-source/__tests__/assets.test.ts
-
-      - name: Run candidate package unit suite
-        id: candidate-suite
-        continue-on-error: true
-        run: yarn workspace @strapi/data-transfer test:unit --runInBand
-
-      - name: Candidate package suite passed
-        if: steps.candidate-suite.outcome == 'success'
-        run: echo "Candidate package unit suite is green"
-
-      - name: Candidate package suite failed
-        if: steps.candidate-suite.outcome == 'failure'
-        run: exit 1
-
-      - name: Run data-transfer TypeScript checks
+      - name: Run focused regression
+        run: yarn workspace @strapi/data-transfer test:unit --runInBand src/strapi/providers/local-source/__tests__/assets.test.ts -t "measures remote assets when the response has no content-length header"
+      - name: Run complete local-source tests
+        run: yarn workspace @strapi/data-transfer test:unit --runInBand src/strapi/providers/local-source
+      - name: Run TypeScript checks
         run: yarn workspace @strapi/data-transfer test:ts
-
       - name: Build data-transfer
         run: yarn workspace @strapi/data-transfer build
-
-      - name: Run data-transfer lint
+      - name: Run lint
         run: yarn workspace @strapi/data-transfer lint
-
       - name: Check formatting
         run: yarn prettier --check packages/core/data-transfer/src/strapi/providers/local-source/assets.ts packages/core/data-transfer/src/strapi/providers/local-source/__tests__/assets.test.ts
-
       - name: Verify final exact tree
         shell: bash
         run: |
