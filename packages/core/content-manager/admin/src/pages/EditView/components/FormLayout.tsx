@@ -7,15 +7,13 @@ import { styled } from 'styled-components';
 import { EditLayout } from '../../../hooks/useDocumentLayout';
 
 import { InputRenderer } from './InputRenderer';
+import { shouldUseResponsiveGridStyles } from './shouldUseResponsiveGridStyles';
 
 import type { UseDocument } from '../../../hooks/useDocument';
 
 export const ResponsiveGridRoot = styled(Grid.Root)`
   container-type: inline-size;
 `;
-
-export const shouldUseResponsiveGridStyles = (userAgent?: string) =>
-  !userAgent?.toLowerCase().includes('jsdom');
 
 const userAgent = typeof navigator === 'undefined' ? undefined : navigator.userAgent;
 
