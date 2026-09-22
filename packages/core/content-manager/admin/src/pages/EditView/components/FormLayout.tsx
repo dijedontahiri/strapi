@@ -14,14 +14,17 @@ export const ResponsiveGridRoot = styled(Grid.Root)`
   container-type: inline-size;
 `;
 
+export const shouldUseResponsiveGridStyles = (userAgent?: string) =>
+  !userAgent?.toLowerCase().includes('jsdom');
+
+const userAgent = typeof navigator === 'undefined' ? undefined : navigator.userAgent;
+
 export const ResponsiveGridItem =
   /**
-   * TODO:
-   * JSDOM cannot handle container queries.
-   * This is a temporary workaround so that tests do not fail in the CI when jestdom throws an error
-   * for failing to parse the stylesheet.
+   * JSDOM cannot handle container queries. Detect JSDOM directly instead of using NODE_ENV,
+   * because NODE_ENV can also be set to "test" when building an admin bundle for deployment.
    */
-  process.env.NODE_ENV !== 'test'
+  shouldUseResponsiveGridStyles(userAgent)
     ? styled(Grid.Item)<{ col: number }>`
         grid-column: span 12;
         ${({ theme }) => theme.breakpoints.medium} {
