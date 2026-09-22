@@ -8,6 +8,16 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: validate-27084-grid-r2-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+  SOURCE_SHA: 43a7d2335bf3198f50d1c102786377c12e333544
+  BASE_SHA: 38ed6a5e2b7972b41472ceffafcdc0ab57426964
+
 jobs:
   validate:
     if: github.repository == 'dijedontahiri/strapi'
@@ -19,38 +29,62 @@ jobs:
         node: [22, 24, 26]
     steps:
       - name: Checkout exact candidate
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          repository: dijedontahiri/strapi
           ref: 43a7d2335bf3198f50d1c102786377c12e333544
           fetch-depth: 3
+          persist-credentials: false
 
       - name: Setup Node ${{ matrix.node }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: ${{ matrix.node }}
 
-      - name: Enable Corepack
-        run: corepack enable
+      - name: Verify exact candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git cat-file -e "$BASE_SHA^{commit}"
+          test "$(git diff --name-only "$BASE_SHA" HEAD | sort)" = "$(printf '%s\n' packages/core/content-manager/admin/src/pages/EditView/components/FormLayout.tsx packages/core/content-manager/admin/src/pages/EditView/components/shouldUseResponsiveGridStyles.ts packages/core/content-manager/admin/src/pages/EditView/components/tests/FormLayout.test.ts | sort)"
+          git diff --check "$BASE_SHA" HEAD
 
       - name: Install dependencies
-        run: yarn install --immutable
+        run: |
+          corepack enable
+          yarn install --immutable
 
-      - name: Prove regression fails on develop implementation
+      - name: Build content-manager dependencies
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: yarn nx run @strapi/content-manager:build --nx-ignore-cycles --parallel=2
+
+      - name: Prove current develop fails regression
         if: matrix.node == 22
         shell: bash
         run: |
-          git checkout 38ed6a5e2b7972b41472ceffafcdc0ab57426964 -- packages/core/content-manager/admin/src/pages/EditView/components/FormLayout.tsx
-          if yarn jest --config packages/core/content-manager/jest.config.front.js --runInBand --runTestsByPath packages/core/content-manager/admin/src/pages/EditView/components/tests/FormLayout.test.ts; then
-            echo "Expected focused regression to fail with the develop FormLayout implementation"
-            exit 1
-          fi
-          git checkout 43a7d2335bf3198f50d1c102786377c12e333544 -- packages/core/content-manager/admin/src/pages/EditView/components/FormLayout.tsx
+          set -euo pipefail
+          source=packages/core/content-manager/admin/src/pages/EditView/components/FormLayout.tsx
+          cp "$source" /tmp/fixed-FormLayout.tsx
+          git show "$BASE_SHA:$source" > "$source"
+          set +e
+          yarn workspace @strapi/content-manager test:front --runInBand --testPathPattern=FormLayout.test.ts --json --outputFile=/tmp/before.json >/tmp/before.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/before.log
+          test "$status" -eq 1
+          node <<'NODE'
+          const result = require('/tmp/before.json');
+          if (result.numFailedTests !== 1 || result.numPassedTests !== 2 || result.numTotalTests !== 3 || result.numTotalTestSuites !== 1) {
+            throw new Error(`unexpected baseline: ${JSON.stringify({failed: result.numFailedTests, passed: result.numPassedTests, total: result.numTotalTests, suites: result.numTotalTestSuites})}`);
+          }
+          NODE
+          cp /tmp/fixed-FormLayout.tsx "$source"
+          git diff --exit-code
 
       - name: Run focused regression
-        run: yarn jest --config packages/core/content-manager/jest.config.front.js --runInBand --runTestsByPath packages/core/content-manager/admin/src/pages/EditView/components/tests/FormLayout.test.ts
-
-      - name: Build affected package
-        run: yarn workspace @strapi/content-manager build
+        run: yarn workspace @strapi/content-manager test:front --runInBand --testPathPattern=FormLayout.test.ts
 
       - name: Run complete content-manager frontend suite
         run: yarn workspace @strapi/content-manager test:front --runInBand
@@ -61,17 +95,13 @@ jobs:
       - name: Lint affected package
         run: yarn workspace @strapi/content-manager lint
 
-      - name: Check formatting
-        run: yarn prettier --check packages/core/content-manager/admin/src/pages/EditView/components/FormLayout.tsx packages/core/content-manager/admin/src/pages/EditView/components/shouldUseResponsiveGridStyles.ts packages/core/content-manager/admin/src/pages/EditView/components/tests/FormLayout.test.ts
-
-      - name: Verify exact product diff
+      - name: Check formatting and clean exact tree
         shell: bash
         run: |
-          test "$(git rev-parse HEAD)" = "43a7d2335bf3198f50d1c102786377c12e333544"
-          mapfile -t files < <(git diff --name-only 38ed6a5e2b7972b41472ceffafcdc0ab57426964..HEAD)
-          test "${#files[@]}" -eq 3
-          printf '%s\n' "${files[@]}" | grep -Fx 'packages/core/content-manager/admin/src/pages/EditView/components/FormLayout.tsx'
-          printf '%s\n' "${files[@]}" | grep -Fx 'packages/core/content-manager/admin/src/pages/EditView/components/shouldUseResponsiveGridStyles.ts'
-          printf '%s\n' "${files[@]}" | grep -Fx 'packages/core/content-manager/admin/src/pages/EditView/components/tests/FormLayout.test.ts'
-          git diff --check 38ed6a5e2b7972b41472ceffafcdc0ab57426964..HEAD
-          test -z "$(git status --porcelain)"
+          set -euo pipefail
+          yarn prettier --check packages/core/content-manager/admin/src/pages/EditView/components/FormLayout.tsx packages/core/content-manager/admin/src/pages/EditView/components/shouldUseResponsiveGridStyles.ts packages/core/content-manager/admin/src/pages/EditView/components/tests/FormLayout.test.ts
+          git diff --check
+          git diff --exit-code
+          git diff --cached --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
