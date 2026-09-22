@@ -1,15 +1,15 @@
-name: Validate #27246 relation create event ordering
+name: Validate #27246 create-option values
 
 on:
   push:
     branches:
-      - validate/27246-create-event-order-r7-20260921
+      - validate/27246-option-token-r8-20260922
 
 permissions:
   contents: read
 
 concurrency:
-  group: validate-27246-create-event-order-r7-${{ github.ref }}
+  group: validate-27246-r8-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -30,7 +30,7 @@ jobs:
       - name: Check out validation harness
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: validate/27246-create-event-order-r7-20260921
+          ref: validate/27246-option-token-r8-20260922
           path: harness
           fetch-depth: 1
           persist-credentials: false
@@ -102,7 +102,7 @@ jobs:
           }
           NODE
 
-      - name: Apply create-event candidate
+      - name: Apply option-token candidate
         working-directory: source
         shell: bash
         run: |
@@ -121,15 +121,15 @@ jobs:
           replacements = [
             (
               "  const [textValue, setTextValue] = React.useState<string | undefined>('');",
-              "  const [textValue, setTextValue] = React.useState<string | undefined>('');\n  const createRelationValue = React.useRef<string>();"
-            ),
-            (
-              "          onCreateOption={() => {\n            if (canCreate) {\n              dispatch({",
-              "          onCreateOption={() => {\n            if (canCreate) {\n              const value = textValue ?? '';\n              createRelationValue.current = value;\n              window.setTimeout(() => {\n                if (createRelationValue.current === value) {\n                  createRelationValue.current = undefined;\n                }\n              });\n\n              dispatch({"
+              "  const [textValue, setTextValue] = React.useState<string | undefined>('');\n  const relationOptionValuePrefix = `${React.useId()}-relation-option-`;"
             ),
             (
               "          onChange={handleChange}",
-              "          onChange={(relationId) => {\n            if (relationId !== textValue) {\n              handleChange(relationId);\n              return;\n            }\n\n            queueMicrotask(() => {\n              if (createRelationValue.current === relationId) {\n                createRelationValue.current = undefined;\n                return;\n              }\n\n              handleChange(relationId);\n            });\n          }}"
+              "          onChange={(value) => {\n            if (!value?.startsWith(relationOptionValuePrefix)) {\n              return;\n            }\n\n            handleChange(value.slice(relationOptionValuePrefix.length));\n          }}"
+            ),
+            (
+              "              <ComboboxOption key={opt.id} value={opt.id.toString()} textValue={textValue}>",
+              "              <ComboboxOption\n                key={opt.id}\n                value={`${relationOptionValuePrefix}${opt.id}`}\n                textValue={textValue}\n              >"
             ),
           ]
           for old, new in replacements:
