@@ -1,21 +1,21 @@
-name: Validate #27246 create-option values
+name: Validate #27246 create-option values on current develop
 
 on:
   push:
     branches:
-      - validate/27246-option-token-r8-20260922
+      - validate/27246-option-token-r9-current-develop-20260922
 
 permissions:
   contents: read
 
 concurrency:
-  group: validate-27246-r8-${{ github.ref }}
+  group: validate-27246-r9-${{ github.ref }}
   cancel-in-progress: false
 
 env:
   NX_DAEMON: 'false'
   STRAPI_TELEMETRY_DISABLED: 'true'
-  SOURCE_SHA: 142d9c6b31f35766e390e9ff78595d83f5b97904
+  SOURCE_SHA: c71ae4bb75d293c00fa800dc32eb58ee5c6f95b3
 
 jobs:
   validate:
@@ -30,7 +30,7 @@ jobs:
       - name: Check out validation harness
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: validate/27246-option-token-r8-20260922
+          ref: validate/27246-option-token-r9-current-develop-20260922
           path: harness
           fetch-depth: 1
           persist-credentials: false
@@ -39,7 +39,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: strapi/strapi
-          ref: 142d9c6b31f35766e390e9ff78595d83f5b97904
+          ref: c71ae4bb75d293c00fa800dc32eb58ee5c6f95b3
           path: source
           fetch-depth: 1
           persist-credentials: false
