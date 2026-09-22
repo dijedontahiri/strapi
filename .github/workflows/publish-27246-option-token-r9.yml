@@ -1,0 +1,138 @@
+name: Publish verified #27246 candidate
+
+on:
+  push:
+    branches:
+      - publish/27246-option-token-r9-20260922
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-27246-r9
+  cancel-in-progress: false
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+  SOURCE_SHA: c71ae4bb75d293c00fa800dc32eb58ee5c6f95b3
+  PRODUCT_BRANCH: fix/27246-relation-create-option-values
+
+jobs:
+  publish:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out publication harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: publish/27246-option-token-r9-20260922
+          path: harness
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out exact upstream source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: strapi/strapi
+          ref: c71ae4bb75d293c00fa800dc32eb58ee5c6f95b3
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22
+
+      - name: Verify exact source
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git hash-object packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx)" = "12a0d4669e7e90dc2607261249d8eb918e56eb0d"
+
+      - name: Install dependencies
+        working-directory: source
+        run: |
+          corepack enable
+          yarn install --immutable
+
+      - name: Build content-manager dependencies
+        working-directory: source
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: yarn nx run @strapi/content-manager:build --nx-ignore-cycles --parallel=2
+
+      - name: Materialize verified regression and candidate
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 ../harness/.github/validation/relation-creation.py tests
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          p = Path('packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx')
+          expected = '12a0d4669e7e90dc2607261249d8eb918e56eb0d'
+          actual = subprocess.check_output(['git', 'hash-object', str(p)], text=True).strip()
+          if actual != expected:
+              raise SystemExit(f'unexpected source blob: {actual}')
+
+          s = p.read_text()
+          replacements = [
+            (
+              "  const [textValue, setTextValue] = React.useState<string | undefined>('');",
+              "  const [textValue, setTextValue] = React.useState<string | undefined>('');\n  const relationOptionValuePrefix = `${React.useId()}-relation-option-`;"
+            ),
+            (
+              "          onChange={handleChange}",
+              "          onChange={(value) => {\n            if (!value?.startsWith(relationOptionValuePrefix)) {\n              return;\n            }\n\n            handleChange(value.slice(relationOptionValuePrefix.length));\n          }}"
+            ),
+            (
+              "              <ComboboxOption key={opt.id} value={opt.id.toString()} textValue={textValue}>",
+              "              <ComboboxOption\n                key={opt.id}\n                value={`${relationOptionValuePrefix}${opt.id}`}\n                textValue={textValue}\n              >"
+            ),
+          ]
+          for old, new in replacements:
+              if s.count(old) != 1:
+                  raise SystemExit(f'marker missing/ambiguous: {old!r}')
+              s = s.replace(old, new, 1)
+          p.write_text(s)
+          PY
+          yarn prettier --write packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/tests/RelationCreation.test.tsx
+
+      - name: Verify focused regression on materialized tree
+        working-directory: source
+        run: yarn workspace @strapi/content-manager test:front --runInBand --testPathPattern=Relations/tests/RelationCreation.test.tsx
+
+      - name: Verify publication scope
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          mapfile -t changed < <(git status --short | sed -E 's/^...//')
+          printf '%s\n' "${changed[@]}"
+          test "${#changed[@]}" -eq 2
+          printf '%s\n' "${changed[@]}" | grep -Fx 'packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx'
+          printf '%s\n' "${changed[@]}" | grep -Fx 'packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/tests/RelationCreation.test.tsx'
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+
+      - name: Push exact verified product tree to fork
+        working-directory: source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name 'Dijedon'
+          git config user.email '99071957+dijedontahiri@users.noreply.github.com'
+          git add packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/Relations.tsx packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Relations/tests/RelationCreation.test.tsx
+          git commit -m 'fix(content-manager): distinguish relation options from create values'
+          product_sha=$(git rev-parse HEAD)
+          git remote add fork "https://x-access-token:${GH_TOKEN}@github.com/dijedontahiri/strapi.git"
+          git push fork "HEAD:refs/heads/${PRODUCT_BRANCH}"
+          echo "Published ${PRODUCT_BRANCH} at ${product_sha}"
