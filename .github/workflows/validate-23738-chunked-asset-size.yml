@@ -1,0 +1,99 @@
+name: Validate 23738 remote asset sizing
+
+on:
+  push:
+    branches:
+      - validate/23738-chunked-asset-size-r1-20260922
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.repository == 'dijedontahiri/strapi'
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@v4
+        with:
+          repository: dijedontahiri/strapi
+          ref: 470fd41e99e6dade24576f2dde20aedba0a3dbd3
+          fetch-depth: 0
+
+      - name: Set up Node ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      - name: Verify exact candidate and scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "470fd41e99e6dade24576f2dde20aedba0a3dbd3"
+          mapfile -t changed < <(git diff --name-only 142d9c6b31f35766e390e9ff78595d83f5b97904..HEAD | sort)
+          expected=(
+            "packages/core/data-transfer/src/strapi/providers/local-source/__tests__/assets.test.ts"
+            "packages/core/data-transfer/src/strapi/providers/local-source/assets.ts"
+          )
+          printf '%s\n' "${changed[@]}"
+          test "${#changed[@]}" -eq "${#expected[@]}"
+          for i in "${!expected[@]}"; do
+            test "${changed[$i]}" = "${expected[$i]}"
+          done
+
+      - name: Prove regression fails on develop
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="packages/core/data-transfer/src/strapi/providers/local-source/assets.ts"
+          git checkout 142d9c6b31f35766e390e9ff78595d83f5b97904 -- "$target"
+          set +e
+          yarn workspace @strapi/data-transfer test:unit --runInBand src/strapi/providers/local-source/__tests__/assets.test.ts -t "measures remote assets when the response has no content-length header" 2>&1 | tee /tmp/negative-control.log
+          status=${PIPESTATUS[0]}
+          set -e
+          git checkout 470fd41e99e6dade24576f2dde20aedba0a3dbd3 -- "$target"
+          if [ "$status" -eq 0 ]; then
+            echo "Regression unexpectedly passes on develop"
+            exit 1
+          fi
+          grep -F "measures remote assets when the response has no content-length header" /tmp/negative-control.log
+          grep -F "Expected:" /tmp/negative-control.log
+          grep -F "Received:" /tmp/negative-control.log
+          git diff --exit-code
+
+      - name: Run focused regression
+        run: yarn workspace @strapi/data-transfer test:unit --runInBand src/strapi/providers/local-source/__tests__/assets.test.ts -t "measures remote assets when the response has no content-length header"
+
+      - name: Run data-transfer unit tests
+        run: yarn workspace @strapi/data-transfer test:unit --runInBand
+
+      - name: Run data-transfer TypeScript checks
+        run: yarn workspace @strapi/data-transfer test:ts
+
+      - name: Build data-transfer
+        run: yarn workspace @strapi/data-transfer build
+
+      - name: Run data-transfer lint
+        run: yarn workspace @strapi/data-transfer lint
+
+      - name: Check formatting
+        run: yarn prettier --check packages/core/data-transfer/src/strapi/providers/local-source/assets.ts packages/core/data-transfer/src/strapi/providers/local-source/__tests__/assets.test.ts
+
+      - name: Verify final exact tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "470fd41e99e6dade24576f2dde20aedba0a3dbd3"
+          git diff --exit-code
