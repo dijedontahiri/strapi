@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, writeFile, rm } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
-import { createAssetsStream } from '../assets';
+import { createAssetsStream, getFileStatsForTransfer } from '../assets';
 
 describe('Local source assets stream warnings', () => {
   let publicDir: string;
@@ -15,6 +15,17 @@ describe('Local source assets stream warnings', () => {
 
   afterEach(async () => {
     await rm(publicDir, { recursive: true, force: true });
+  });
+
+  test('measures remote assets when the response has no content-length header', async () => {
+    const payload = 'remote asset streamed with chunked transfer encoding';
+    const strapi = {
+      fetch: jest.fn().mockResolvedValue(new Response(payload, { status: 200 })),
+    } as any;
+
+    await expect(
+      getFileStatsForTransfer('https://cdn.example.com/asset.pdf', strapi)
+    ).resolves.toEqual({ size: new TextEncoder().encode(payload).byteLength });
   });
 
   test('reports warning callback when media DB row points to missing file', async () => {
