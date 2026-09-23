@@ -1,0 +1,96 @@
+name: Validate issue 27761 blob crop URL
+
+on:
+  push:
+    branches:
+      - validate/27761-blob-crop-url-20260923
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-27761-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+  SOURCE_SHA: ea7e7b8e9e2e93b099677f5562a37621dec71d2c
+  BASE_SHA: a82c2d8bab32d61eb8399f6f3b244cbcc03cca13
+  PREVIEW_FILE: packages/core/upload/admin/src/legacy/components/EditAssetDialog/PreviewBox/PreviewBox.tsx
+  TEST_FILE: packages/core/upload/admin/src/legacy/components/EditAssetDialog/tests/EditAssetDialog.test.tsx
+
+jobs:
+  verify:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node ${{ matrix.node }}
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Install pinned dependencies
+        run: |
+          corepack enable
+          yarn install --immutable
+
+      - name: Prove baseline regression
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          git checkout "$BASE_SHA" -- "$PREVIEW_FILE"
+          set +e
+          output=$(yarn workspace @strapi/upload test:front --runInBand --testPathPattern=EditAssetDialog.test.tsx --testNamePattern='keeps a replacement blob URL unchanged when cropping before save' 2>&1)
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          if [ "$status" -eq 0 ]; then
+            echo 'Baseline unexpectedly passed the regression test.' >&2
+            exit 1
+          fi
+          printf '%s\n' "$output" | grep -F 'keeps a replacement blob URL unchanged when cropping before save'
+          printf '%s\n' "$output" | grep -F 'updatedAt'
+          git checkout "$SOURCE_SHA" -- "$PREVIEW_FILE"
+
+      - name: Build upload package and dependencies
+        run: yarn nx run @strapi/upload:build --nx-ignore-cycles --parallel=2
+
+      - name: Run focused regression
+        run: yarn workspace @strapi/upload test:front --runInBand --testPathPattern=EditAssetDialog.test.tsx --testNamePattern='keeps a replacement blob URL unchanged when cropping before save'
+
+      - name: Run complete upload frontend suite
+        run: yarn workspace @strapi/upload test:front --runInBand
+
+      - name: Type-check upload admin
+        run: yarn workspace @strapi/upload test:ts:front
+
+      - name: Lint upload package
+        run: yarn workspace @strapi/upload lint
+
+      - name: Check changed-file formatting
+        run: yarn prettier --check "$PREVIEW_FILE" "$TEST_FILE"
+
+      - name: Verify exact source and focused diff
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git diff --check "$BASE_SHA" "$SOURCE_SHA"
+          mapfile -t files < <(git diff --name-only "$BASE_SHA" "$SOURCE_SHA")
+          printf '%s\n' "${files[@]}"
+          test "${#files[@]}" -eq 2
+          test "${files[0]}" = 'packages/core/upload/admin/src/legacy/components/EditAssetDialog/PreviewBox/PreviewBox.tsx'
+          test "${files[1]}" = 'packages/core/upload/admin/src/legacy/components/EditAssetDialog/tests/EditAssetDialog.test.tsx'
+          test -z "$(git status --porcelain)"
