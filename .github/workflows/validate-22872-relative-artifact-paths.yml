@@ -1,0 +1,128 @@
+name: Validate 22872 GraphQL artifact paths
+
+on:
+  push:
+    branches:
+      - validate/22872-relative-artifact-paths-20260923
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+
+    steps:
+      - name: Checkout exact candidate source
+        uses: actions/checkout@v4
+        with:
+          repository: dijedontahiri/strapi
+          ref: 9596cdeaa1872d251254b1ebb100a8602526c996
+          fetch-depth: 0
+
+      - name: Verify candidate source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "9596cdeaa1872d251254b1ebb100a8602526c996"
+          test "$(git merge-base 38ed6a5e2b7972b41472ceffafcdc0ab57426964 HEAD)" = "38ed6a5e2b7972b41472ceffafcdc0ab57426964"
+
+      - name: Set up Node ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Install dependencies immutably
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          yarn install --immutable
+
+      - name: Prove the regression on current develop
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          set -euo pipefail
+          TEST_PATH="packages/plugins/graphql/server/src/services/content-api/__tests__/artifact-paths.test.ts"
+          cp "$TEST_PATH" /tmp/artifact-paths.test.ts
+          git checkout --detach 38ed6a5e2b7972b41472ceffafcdc0ab57426964
+          mkdir -p "$(dirname "$TEST_PATH")"
+          cp /tmp/artifact-paths.test.ts "$TEST_PATH"
+
+          set +e
+          yarn workspace @strapi/plugin-graphql test:unit \
+            server/src/services/content-api/__tests__/artifact-paths.test.ts --runInBand \
+            > /tmp/22872-baseline.log 2>&1
+          baseline_status=$?
+          set -e
+          cat /tmp/22872-baseline.log
+
+          test "$baseline_status" -ne 0
+          grep -F "1 failed, 1 passed, 2 total" /tmp/22872-baseline.log
+          grep -F "resolves relative schema and typegen paths from the Strapi application root" \
+            /tmp/22872-baseline.log
+
+          git reset --hard
+          git clean -fd
+          git checkout --detach 9596cdeaa1872d251254b1ebb100a8602526c996
+          test "$(git rev-parse HEAD)" = "9596cdeaa1872d251254b1ebb100a8602526c996"
+
+      - name: Build GraphQL package
+        shell: bash
+        run: |
+          set -euo pipefail
+          yarn workspace @strapi/plugin-graphql build
+
+      - name: Run focused regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          yarn workspace @strapi/plugin-graphql test:unit \
+            server/src/services/content-api/__tests__/artifact-paths.test.ts --runInBand
+
+      - name: Run complete GraphQL unit suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          yarn workspace @strapi/plugin-graphql test:unit --runInBand
+
+      - name: Type-check GraphQL server
+        shell: bash
+        run: |
+          set -euo pipefail
+          yarn workspace @strapi/plugin-graphql test:ts:back
+
+      - name: Lint GraphQL package
+        shell: bash
+        run: |
+          set -euo pipefail
+          yarn workspace @strapi/plugin-graphql lint
+
+      - name: Check formatting and diff scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          yarn prettier --check \
+            packages/plugins/graphql/server/src/services/content-api/index.ts \
+            packages/plugins/graphql/server/src/services/content-api/__tests__/artifact-paths.test.ts
+          git diff --check 38ed6a5e2b7972b41472ceffafcdc0ab57426964...HEAD
+
+          actual="$(git diff --name-only 38ed6a5e2b7972b41472ceffafcdc0ab57426964...HEAD | sort)"
+          expected="$(printf '%s\n' \
+            packages/plugins/graphql/server/src/services/content-api/__tests__/artifact-paths.test.ts \
+            packages/plugins/graphql/server/src/services/content-api/index.ts | sort)"
+          test "$actual" = "$expected"
+
+      - name: Verify exact final tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "9596cdeaa1872d251254b1ebb100a8602526c996"
+          test -z "$(git status --porcelain)"
