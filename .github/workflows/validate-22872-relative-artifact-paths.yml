@@ -74,11 +74,17 @@ jobs:
           git checkout --detach 9596cdeaa1872d251254b1ebb100a8602526c996
           test "$(git rev-parse HEAD)" = "9596cdeaa1872d251254b1ebb100a8602526c996"
 
-      - name: Build GraphQL package
+      - name: Build runtime workspace code
         shell: bash
         run: |
           set -euo pipefail
-          yarn workspace @strapi/plugin-graphql build
+          yarn build:code --parallel=2
+
+      - name: Build GraphQL package and declaration dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          yarn nx run @strapi/plugin-graphql:build --nx-ignore-cycles --parallel=2
 
       - name: Run focused regression
         shell: bash
