@@ -1,0 +1,88 @@
+name: Validate issue 27776 auth errors
+
+on:
+  push:
+    branches:
+      - validate/27776-auth-errors-20260923
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    env:
+      SOURCE_SHA: d4e66da961d52c7bb3e495bbc72d3f8951323428
+      BASE_SHA: 3f46bd44ef16652e13bcc57f4c48fe52784248ba
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 0
+
+      - name: Setup Node ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      - name: Build @strapi/core
+        run: yarn workspace @strapi/core build
+
+      - name: Prove regression on baseline
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          git checkout "$BASE_SHA" -- packages/core/core/src/services/auth/index.ts
+          set +e
+          output=$(yarn workspace @strapi/core test:unit --runInBand src/services/auth/__tests__/index.test.ts 2>&1)
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          if [ "$status" -eq 0 ]; then
+            echo 'Baseline unexpectedly passed the regression test.' >&2
+            exit 1
+          fi
+          printf '%s\n' "$output" | grep -Eq 'Tests:[[:space:]]+3 failed, 2 passed, 5 total'
+          git checkout "$SOURCE_SHA" -- packages/core/core/src/services/auth/index.ts
+
+      - name: Run focused regression
+        run: yarn workspace @strapi/core test:unit --runInBand src/services/auth/__tests__/index.test.ts
+
+      - name: Run complete core Jest suite
+        run: yarn workspace @strapi/core test:unit --runInBand
+
+      - name: Run complete core Vitest suite
+        run: yarn workspace @strapi/core test:unit:vitest
+
+      - name: Typecheck @strapi/core
+        run: yarn workspace @strapi/core test:ts
+
+      - name: Lint @strapi/core
+        run: yarn workspace @strapi/core lint
+
+      - name: Check formatting
+        run: yarn prettier --check packages/core/core/src/services/auth/index.ts packages/core/core/src/services/auth/__tests__/index.test.ts
+
+      - name: Verify exact source and scope
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          mapfile -t files < <(git diff --name-only "$BASE_SHA" "$SOURCE_SHA")
+          printf '%s\n' "${files[@]}"
+          test "${#files[@]}" -eq 2
+          test "${files[0]}" = 'packages/core/core/src/services/auth/__tests__/index.test.ts'
+          test "${files[1]}" = 'packages/core/core/src/services/auth/index.ts'
+          test -z "$(git status --porcelain)"
