@@ -1,0 +1,86 @@
+name: Validate 27776 auth error identity
+
+on:
+  push:
+    branches:
+      - validate/27776-auth-error-identity-r1-20260923
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 6834fb8d89febefb95f6b678fb9700fcea25551f
+          fetch-depth: 2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: yarn
+
+      - run: corepack enable
+      - run: yarn install --immutable
+      - run: yarn nx run @strapi/core:build --nx-ignore-cycles --parallel=2
+
+      - name: Prove regression fails on upstream source
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout 60aa86eec899b7d1dac6c3a1383537688f81586a -- packages/core/core/src/services/server/compose-endpoint.ts
+          set +e
+          yarn workspace @strapi/core test:unit --runInBand src/services/server/__tests__/compose-endpoint.test.ts --json --outputFile=/tmp/baseline.json
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "Expected the focused regression to fail on upstream source"
+            exit 1
+          fi
+          node - <<'NODE'
+          const fs = require('fs');
+          const result = JSON.parse(fs.readFileSync('/tmp/baseline.json', 'utf8'));
+          if (result.numFailedTests !== 2 || result.numPassedTests !== 1 || result.numTotalTests !== 3) {
+            console.error({
+              numFailedTests: result.numFailedTests,
+              numPassedTests: result.numPassedTests,
+              numTotalTests: result.numTotalTests,
+            });
+            process.exit(1);
+          }
+          NODE
+          git checkout 6834fb8d89febefb95f6b678fb9700fcea25551f -- packages/core/core/src/services/server/compose-endpoint.ts
+
+      - name: Focused regression
+        run: yarn workspace @strapi/core test:unit --runInBand src/services/server/__tests__/compose-endpoint.test.ts
+
+      - name: Complete core unit suite
+        run: yarn workspace @strapi/core test:unit --runInBand
+
+      - name: Core TypeScript
+        run: yarn workspace @strapi/core test:ts
+
+      - name: Core ESLint
+        run: yarn workspace @strapi/core lint
+
+      - name: Changed-file formatting
+        run: yarn prettier --check packages/core/core/src/services/server/compose-endpoint.ts packages/core/core/src/services/server/__tests__/compose-endpoint.test.ts
+
+      - name: Exact source and clean tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "6834fb8d89febefb95f6b678fb9700fcea25551f"
+          git diff --check
+          git diff --exit-code
+          test -z "$(git status --porcelain --untracked-files=no)"
