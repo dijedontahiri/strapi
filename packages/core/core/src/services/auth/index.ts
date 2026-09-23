@@ -42,6 +42,32 @@ const validStrategy = (strategy: Strategy) => {
   }
 };
 
+const getErrorDetails = (error: Error) =>
+  'details' in error ? (error as Error & { details?: unknown }).details : undefined;
+
+const normalizeAuthError = (error: unknown) => {
+  if (!(error instanceof Error)) {
+    return error;
+  }
+
+  if (error instanceof errors.UnauthorizedError || error instanceof errors.ForbiddenError) {
+    return error;
+  }
+
+  const details = getErrorDetails(error);
+
+  switch (error.name) {
+    case 'UnauthorizedError':
+      return new errors.UnauthorizedError(error.message, details);
+    case 'PolicyError':
+      return new errors.PolicyError(error.message, details);
+    case 'ForbiddenError':
+      return new errors.ForbiddenError(error.message, details);
+    default:
+      return error;
+  }
+};
+
 const createAuthentication = (): Authentication => {
   const strategies: Record<string, Strategy[]> = {};
 
@@ -130,7 +156,12 @@ const createAuthentication = (): Authentication => {
       }
 
       if (typeof auth.strategy.verify === 'function') {
-        return auth.strategy.verify(auth, config);
+        try {
+          const result = await auth.strategy.verify(auth, config);
+          return result;
+        } catch (error) {
+          throw normalizeAuthError(error);
+        }
       }
     },
   };
