@@ -47,6 +47,9 @@ jobs:
           corepack enable
           yarn install --immutable
 
+      - name: Build upload package and dependencies
+        run: yarn nx run @strapi/upload:build --nx-ignore-cycles --parallel=2
+
       - name: Prove baseline regression
         if: matrix.node == 22
         shell: bash
@@ -64,9 +67,6 @@ jobs:
           printf '%s\n' "$output" | grep -F 'keeps a replacement blob URL unchanged when cropping before save'
           printf '%s\n' "$output" | grep -F 'updatedAt'
           git checkout "$SOURCE_SHA" -- "$PREVIEW_FILE"
-
-      - name: Build upload package and dependencies
-        run: yarn nx run @strapi/upload:build --nx-ignore-cycles --parallel=2
 
       - name: Run focused regression
         run: yarn workspace @strapi/upload test:front --runInBand --testPathPattern=EditAssetDialog.test.tsx --testNamePattern='keeps a replacement blob URL unchanged when cropping before save'
