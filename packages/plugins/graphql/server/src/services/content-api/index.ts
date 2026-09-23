@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import { pruneSchema } from '@graphql-tools/utils';
 import { makeSchema } from 'nexus';
 import { prop, startsWith } from 'lodash/fp';
@@ -18,6 +20,14 @@ import {
   registerDynamicZonesDefinition,
 } from './register-functions';
 import { TypeRegistry } from '../type-registry';
+
+const resolveArtifactPath = (output: string | boolean, appRoot: string) => {
+  if (typeof output !== 'string' || path.isAbsolute(output)) {
+    return output;
+  }
+
+  return path.resolve(appRoot, output);
+};
 
 export default ({ strapi }: { strapi: Core.Strapi }) => {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -70,8 +80,8 @@ export default ({ strapi }: { strapi: Core.Strapi }) => {
 
     // Create a configuration object for the artifacts generation
     const outputs: Nexus.core.SchemaConfig['outputs'] = {
-      schema: config('artifacts.schema', false),
-      typegen: config('artifacts.typegen', false),
+      schema: resolveArtifactPath(config('artifacts.schema', false), strapi.dirs.app.root),
+      typegen: resolveArtifactPath(config('artifacts.typegen', false), strapi.dirs.app.root),
     };
 
     const currentEnv = strapi.config.get('environment');
