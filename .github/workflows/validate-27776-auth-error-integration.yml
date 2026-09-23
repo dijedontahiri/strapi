@@ -1,0 +1,45 @@
+name: Validate 27776 auth error integration
+
+on:
+  push:
+    branches:
+      - validate/27776-auth-error-integration-20260923
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 1c3a9ae239cff086310f7d7e5fea87046d4888c6
+          fetch-depth: 2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+
+      - run: corepack enable
+      - run: yarn install --immutable
+      - run: yarn build:code --parallel=2
+
+      - name: Users-permissions Content API integration
+        run: yarn test:api --db=sqlite tests/api/plugins/users-permissions/content-api
+
+      - name: Core endpoint integration
+        run: yarn test:api --db=sqlite tests/api/core/strapi/endpoint.test.api.js
+
+      - name: Exact source and clean tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "1c3a9ae239cff086310f7d7e5fea87046d4888c6"
+          git diff --check
+          git diff --exit-code
+          test -z "$(git status --porcelain --untracked-files=no)"
