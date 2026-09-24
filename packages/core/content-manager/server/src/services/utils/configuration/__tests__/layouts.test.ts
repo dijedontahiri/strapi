@@ -42,6 +42,49 @@ describe('Layouts', () => {
     expect(layout.edit).toEqual([[{ name: 'title', size: 6 }], [{ name: 'nodes', size: 12 }]]);
   });
 
+  it('should follow schema order when the stored edit layout is still the generated default', async () => {
+    const configuration = {
+      layouts: {
+        list: ['id', 'title'],
+        edit: [[{ name: 'title', size: 6 }], [{ name: 'nodes', size: 12 }]],
+      },
+      metadatas: { id: {}, title: {}, nodes: {} },
+    };
+    const schema = createMockSchema({});
+    schema.attributes = {
+      id: schema.attributes.id,
+      nodes: schema.attributes.nodes,
+      title: schema.attributes.title,
+    };
+
+    const layout = await syncLayouts(configuration, schema);
+
+    expect(layout.edit).toEqual([[{ name: 'nodes', size: 12 }], [{ name: 'title', size: 6 }]]);
+  });
+
+  it('should preserve an explicitly configured edit layout when schema order changes', async () => {
+    const configuration = {
+      layouts: {
+        list: ['id', 'title'],
+        edit: [[{ name: 'title', size: 12 }], [{ name: 'nodes', size: 12 }]],
+      },
+      metadatas: { id: {}, title: {}, nodes: {} },
+    };
+    const schema = createMockSchema({});
+    schema.attributes = {
+      id: schema.attributes.id,
+      nodes: schema.attributes.nodes,
+      title: schema.attributes.title,
+    };
+
+    const layout = await syncLayouts(configuration, schema);
+
+    expect(layout.edit).toEqual([
+      [{ name: 'title', size: 12 }],
+      [{ name: 'nodes', size: 12 }],
+    ]);
+  });
+
   it('should append new fields at the end of the layouts', async () => {
     const configuration = {
       layouts: {
