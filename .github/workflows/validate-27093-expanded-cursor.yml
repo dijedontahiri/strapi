@@ -52,7 +52,6 @@ jobs:
           import re
           import subprocess
           import sys
-
           base = 'a82c2d8bab32d61eb8399f6f3b244cbcc03cca13'
           source = '2893fee2c9e9782322a4bee7a187d0211ee7bf41'
           diff = subprocess.check_output(['git', 'diff', '--unified=0', base, source], text=True)
@@ -71,8 +70,10 @@ jobs:
       - name: Install dependencies
         run: yarn install --immutable
 
-      - name: Build frontend test environment
-        run: yarn nx run @strapi/admin-test-utils:build
+      - name: Build Content Manager dependency graph and frontend test environment
+        run: |
+          yarn nx run @strapi/content-manager:build
+          yarn nx run @strapi/admin-test-utils:build
 
       - name: Prove focused regression fails on unchanged develop
         if: matrix.node == 22
@@ -107,9 +108,6 @@ jobs:
 
       - name: Check changed-file formatting
         run: yarn prettier --check "$FIELD_FILE" "$TEST_FILE"
-
-      - name: Build Content Manager and dependencies
-        run: yarn nx run @strapi/content-manager:build
 
       - name: Verify final exact tree
         if: always()
