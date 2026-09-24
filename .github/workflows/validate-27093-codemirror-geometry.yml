@@ -46,7 +46,7 @@ jobs:
             <link rel="stylesheet" href="/node_modules/codemirror5/lib/codemirror.css" />
             <style>
               html, body { margin: 0; padding: 0; font-family: Arial, sans-serif; }
-              #host { display: none; width: 720px; border: 1px solid #ddd; }
+              #host { width: 360px; border: 1px solid #ddd; }
               .CodeMirror { font-size: 16px; height: 500px; }
               .CodeMirror-lines { padding: 8px 16px; }
               .CodeMirror pre.CodeMirror-line,
@@ -80,7 +80,7 @@ jobs:
               window.cm = cm;
 
               window.openEditor = () => {
-                document.getElementById('host').style.display = 'block';
+                document.getElementById('host').style.width = '720px';
               };
 
               window.getTarget = () => {
@@ -88,8 +88,9 @@ jobs:
                 const needle = '57Blocks delivered';
                 const logical = cm.getLine(line);
                 const expectedCh = logical.indexOf(needle) + 3;
-                const pre = document.querySelectorAll('.CodeMirror-code pre.CodeMirror-line')[line];
-                if (!pre) throw new Error(`Missing rendered line ${line}`);
+                const lines = document.querySelectorAll('.CodeMirror-code pre.CodeMirror-line');
+                const pre = lines[line];
+                if (!pre) throw new Error(`Missing rendered line ${line}; rendered=${lines.length}`);
 
                 const walker = document.createTreeWalker(pre, NodeFilter.SHOW_TEXT);
                 let remaining = expectedCh;
@@ -120,8 +121,9 @@ jobs:
           cat > /tmp/probe.spec.cjs <<'JS'
           const { test, expect } = require('@playwright/test');
 
-          test('hidden-to-expanded CodeMirror needs refresh for cursor geometry', async ({ page }) => {
+          test('resized CodeMirror needs refresh for wrapped cursor geometry', async ({ page }) => {
             await page.goto('http://127.0.0.1:4173/tmp/probe.html');
+            await page.waitForTimeout(50);
             await page.evaluate(() => window.openEditor());
             await page.waitForTimeout(100);
 
