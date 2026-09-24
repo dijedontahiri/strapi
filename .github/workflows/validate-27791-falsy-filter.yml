@@ -8,6 +8,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: validate-27791-falsy-filter
+  cancel-in-progress: false
+
+env:
+  SOURCE_SHA: e1d16bf981c7d9fbf7c975464ef6cfca1138e6ea
+
 jobs:
   baseline:
     if: github.repository == 'dijedontahiri/strapi'
@@ -22,7 +29,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: dijedontahiri/strapi
-          ref: e1d16bf981c7d9fbf7c975464ef6cfca1138e6ea
+          ref: ${{ env.SOURCE_SHA }}
           persist-credentials: false
       - name: Setup Node 22
         uses: actions/setup-node@v4
@@ -49,5 +56,5 @@ jobs:
           grep -E "2 failed|failed, 2 total" /tmp/repro.log
       - name: Verify exact source
         run: |
-          test "$(git rev-parse HEAD)" = "e1d16bf981c7d9fbf7c975464ef6cfca1138e6ea"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           git diff --exit-code
