@@ -41,6 +41,27 @@ const Wysiwyg = React.forwardRef<EditorApi, WysiwygProps>(
 
     const MediaLibraryDialog = components['media-library'];
 
+    React.useEffect(() => {
+      if (!isExpandMode) {
+        return;
+      }
+
+      const editor = editorRef.current;
+      if (!editor) {
+        return;
+      }
+
+      const resizeObserver = new ResizeObserver(() => {
+        editor.refresh();
+      });
+
+      resizeObserver.observe(editor.getWrapperElement());
+
+      return () => {
+        resizeObserver.disconnect();
+      };
+    }, [isExpandMode]);
+
     const handleToggleMediaLib = () => setMediaLibVisible((prev) => !prev);
     const handleTogglePreviewMode = () => setIsPreviewMode((prev) => !prev);
     const handleToggleExpand = () => {
