@@ -1,0 +1,53 @@
+name: validate-27791-falsy-filter
+
+on:
+  push:
+    branches:
+      - validate/27791-falsy-filter-r1-20260924
+
+permissions:
+  contents: read
+
+jobs:
+  baseline:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Preflight
+        run: |
+          node --version || true
+          df -h .
+      - name: Checkout exact regression-only tree
+        uses: actions/checkout@v4
+        with:
+          repository: dijedontahiri/strapi
+          ref: e1d16bf981c7d9fbf7c975464ef6cfca1138e6ea
+          persist-credentials: false
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+      - name: Enable Corepack
+        run: corepack enable
+      - name: Install
+        run: yarn install --immutable
+      - name: Prove baseline regression
+        shell: bash
+        run: |
+          set +e
+          yarn workspace @strapi/admin test:front admin/src/components/tests/Filters.falsy-values.test.tsx --runInBand 2>&1 | tee /tmp/repro.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "Expected the regression test to fail on unchanged production code"
+            exit 1
+          fi
+          grep -F "applies false as a boolean filter value" /tmp/repro.log
+          grep -F "applies zero as a numeric filter value" /tmp/repro.log
+          grep -E "2 failed|failed, 2 total" /tmp/repro.log
+      - name: Verify exact source
+        run: |
+          test "$(git rev-parse HEAD)" = "e1d16bf981c7d9fbf7c975464ef6cfca1138e6ea"
+          git diff --exit-code
