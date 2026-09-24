@@ -71,6 +71,9 @@ jobs:
       - name: Install dependencies
         run: yarn install --immutable
 
+      - name: Build frontend test environment
+        run: yarn nx run @strapi/admin-test-utils:build
+
       - name: Prove focused regression fails on unchanged develop
         if: matrix.node == 22
         run: |
@@ -80,15 +83,15 @@ jobs:
           yarn workspace @strapi/content-manager test:front --runInBand "$TEST_ARG" > /tmp/baseline.log 2>&1
           status=$?
           set -e
+          git checkout "$SOURCE_SHA" -- "$FIELD_FILE"
           cat /tmp/baseline.log
+          git diff --exit-code "$SOURCE_SHA" -- "$FIELD_FILE"
           if [ "$status" -eq 0 ]; then
             echo 'Baseline negative control unexpectedly passed'
             exit 1
           fi
           grep -F 'refreshes CodeMirror geometry when the expanded editor is resized' /tmp/baseline.log
           grep -F 'toBeDefined' /tmp/baseline.log
-          git checkout "$SOURCE_SHA" -- "$FIELD_FILE"
-          git diff --exit-code "$SOURCE_SHA" -- "$FIELD_FILE"
 
       - name: Run focused regression
         run: yarn workspace @strapi/content-manager test:front --runInBand "$TEST_ARG"
@@ -112,6 +115,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
+          git checkout "$SOURCE_SHA" -- "$FIELD_FILE" "$TEST_FILE"
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           git diff --check "$BASE_SHA" "$SOURCE_SHA"
           git diff --exit-code "$SOURCE_SHA" -- "$FIELD_FILE" "$TEST_FILE"
