@@ -50,12 +50,31 @@ function createDefaultEditLayout(schema: any) {
   return appendToEditLayout([], keys, schema);
 }
 
+function createPreviousDefaultEditLayout(configuration: any, schema: any) {
+  const previousAttributes = Object.keys(configuration.metadatas || {}).reduce(
+    (attributes: Record<string, unknown>, name) => {
+      if (Object.prototype.hasOwnProperty.call(schema.attributes, name)) {
+        attributes[name] = schema.attributes[name];
+      }
+
+      return attributes;
+    },
+    {}
+  );
+
+  return createDefaultEditLayout({ ...schema, attributes: previousAttributes });
+}
+
 /** Synchronisation functions */
 
 function syncLayouts(configuration: any, schema: any) {
   if (_.isEmpty(configuration.layouts)) return createDefaultLayouts(schema);
 
   const { list = [], editRelations = [], edit = [] } = configuration.layouts || {};
+
+  const shouldSyncDefaultEditOrder =
+    !_.isEmpty(configuration.metadatas) &&
+    _.isEqual(edit, createPreviousDefaultEditLayout(configuration, schema));
 
   let cleanList = list.filter((attr: any) => isListable(schema, attr));
 
@@ -116,10 +135,13 @@ function syncLayouts(configuration: any, schema: any) {
     );
   }
 
-  // add new attributes to edit view
-  const newEditAttributes = newAttributes.filter((key) => hasEditableAttribute(schema, key));
-
-  cleanEdit = appendToEditLayout(cleanEdit, newEditAttributes, schema);
+  // A generated edit layout follows schema order. Keep explicitly configured layouts stable.
+  if (shouldSyncDefaultEditOrder) {
+    cleanEdit = createDefaultEditLayout(schema);
+  } else {
+    const newEditAttributes = newAttributes.filter((key) => hasEditableAttribute(schema, key));
+    cleanEdit = appendToEditLayout(cleanEdit, newEditAttributes, schema);
+  }
 
   return {
     list: cleanList.length > 0 ? cleanList : createDefaultListLayout(schema),
