@@ -1,0 +1,122 @@
+name: validate-27093-expanded-cursor
+
+on:
+  push:
+    branches:
+      - validate/27093-expanded-cursor-r1-20260924
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    env:
+      SOURCE_SHA: 2893fee2c9e9782322a4bee7a187d0211ee7bf41
+      BASE_SHA: a82c2d8bab32d61eb8399f6f3b244cbcc03cca13
+      FIELD_FILE: packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Wysiwyg/Field.tsx
+      TEST_FILE: packages/core/content-manager/admin/src/pages/EditView/components/FormInputs/Wysiwyg/tests/ExpandMode.test.tsx
+      TEST_ARG: admin/src/pages/EditView/components/FormInputs/Wysiwyg/tests/ExpandMode.test.tsx
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 2893fee2c9e9782322a4bee7a187d0211ee7bf41
+          persist-credentials: false
+          fetch-depth: 3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: yarn
+
+      - name: Verify exact source and scope
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse "$SOURCE_SHA^^")" = "$BASE_SHA"
+          git diff --check "$BASE_SHA" "$SOURCE_SHA"
+          printf '%s\n%s\n' "$FIELD_FILE" "$TEST_FILE" | sort > /tmp/expected-files
+          git diff --name-only "$BASE_SHA" "$SOURCE_SHA" | sort > /tmp/actual-files
+          diff -u /tmp/expected-files /tmp/actual-files
+          git status --porcelain | test ! -s /dev/stdin
+
+      - name: Scan product diff for high-risk secret patterns
+        run: |
+          python3 - <<'PY'
+          import re
+          import subprocess
+          import sys
+
+          base = 'a82c2d8bab32d61eb8399f6f3b244cbcc03cca13'
+          source = '2893fee2c9e9782322a4bee7a187d0211ee7bf41'
+          diff = subprocess.check_output(['git', 'diff', '--unified=0', base, source], text=True)
+          patterns = {
+              'private-key': r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----',
+              'aws-access-key': r'AKIA[0-9A-Z]{16}',
+              'github-token': r'gh[pousr]_[A-Za-z0-9_]{30,}',
+          }
+          hits = [name for name, pattern in patterns.items() if re.search(pattern, diff)]
+          if hits:
+              print('Potential high-risk secret pattern types detected:', ', '.join(hits))
+              sys.exit(1)
+          print('No high-risk secret patterns detected in product diff')
+          PY
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      - name: Prove focused regression fails on unchanged develop
+        if: matrix.node == 22
+        run: |
+          set -euo pipefail
+          git show "$BASE_SHA:$FIELD_FILE" > "$FIELD_FILE"
+          set +e
+          yarn workspace @strapi/content-manager test:front --runInBand "$TEST_ARG" > /tmp/baseline.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/baseline.log
+          if [ "$status" -eq 0 ]; then
+            echo 'Baseline negative control unexpectedly passed'
+            exit 1
+          fi
+          grep -F 'refreshes CodeMirror geometry when the expanded editor is resized' /tmp/baseline.log
+          grep -F 'toBeDefined' /tmp/baseline.log
+          git checkout "$SOURCE_SHA" -- "$FIELD_FILE"
+          git diff --exit-code "$SOURCE_SHA" -- "$FIELD_FILE"
+
+      - name: Run focused regression
+        run: yarn workspace @strapi/content-manager test:front --runInBand "$TEST_ARG"
+
+      - name: Run complete Content Manager frontend suite
+        run: yarn workspace @strapi/content-manager test:front --runInBand
+
+      - name: Run Content Manager frontend typecheck
+        run: yarn workspace @strapi/content-manager test:ts:front
+
+      - name: Run Content Manager lint
+        run: yarn workspace @strapi/content-manager lint
+
+      - name: Check changed-file formatting
+        run: yarn prettier --check "$FIELD_FILE" "$TEST_FILE"
+
+      - name: Build Content Manager and dependencies
+        run: yarn nx run @strapi/content-manager:build
+
+      - name: Verify final exact tree
+        if: always()
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git diff --check "$BASE_SHA" "$SOURCE_SHA"
+          git diff --exit-code "$SOURCE_SHA" -- "$FIELD_FILE" "$TEST_FILE"
+          if [ -n "$(git status --porcelain)" ]; then
+            echo 'Working tree changed during validation:'
+            git status --short
+            exit 1
+          fi
