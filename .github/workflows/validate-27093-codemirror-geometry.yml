@@ -1,0 +1,166 @@
+name: validate-27093-codemirror-geometry
+
+on:
+  push:
+    branches:
+      - validate/27093-codemirror-geometry-20260924
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: a82c2d8bab32d61eb8399f6f3b244cbcc03cca13
+          persist-credentials: false
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+
+      - name: Verify immutable source
+        run: |
+          test "$(git rev-parse HEAD)" = "a82c2d8bab32d61eb8399f6f3b244cbcc03cca13"
+          git diff --exit-code
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      - name: Install Chromium
+        run: yarn playwright install --with-deps chromium
+
+      - name: Create CodeMirror geometry probe
+        run: |
+          cat > /tmp/probe.html <<'HTML'
+          <!doctype html>
+          <html>
+          <head>
+            <meta charset="utf-8" />
+            <link rel="stylesheet" href="/node_modules/codemirror5/lib/codemirror.css" />
+            <style>
+              html, body { margin: 0; padding: 0; font-family: Arial, sans-serif; }
+              #host { display: none; width: 720px; border: 1px solid #ddd; }
+              .CodeMirror { font-size: 16px; height: 500px; }
+              .CodeMirror-lines { padding: 8px 16px; }
+              .CodeMirror pre.CodeMirror-line,
+              .CodeMirror pre.CodeMirror-line-like { line-height: 1.5; }
+            </style>
+          </head>
+          <body>
+            <div id="host"><textarea id="editor"></textarea></div>
+            <script src="/node_modules/codemirror5/lib/codemirror.js"></script>
+            <script>
+              const text = [
+                'Overview',
+                '',
+                'CipherOwl develops compliance infrastructure for blockchain networks, focusing on enforcing on-chain security, address screening, and real-time monitoring. This deliberately extends the reporter paragraph so that it wraps across several visual rows before the later target line.',
+                '',
+                '57Blocks collaborated with CipherOwl to design and implement the Guardian Module, a compliance layer for the Story Chain execution client that filters transactions at the node level.',
+                '',
+                'What 57Blocks delivered',
+                '',
+                'Execution-layer filtering',
+                '',
+                'Integrated a Guardian Module into Story Geth for address-level transaction filtering using Bloom filters, enabling mempool-level blacklisting across blob and legacy transactions.'
+              ].join('\n');
+
+              const cm = CodeMirror.fromTextArea(document.getElementById('editor'), {
+                lineWrapping: true,
+                inputStyle: 'contenteditable',
+                lineNumbers: false,
+              });
+              cm.setValue(text);
+              window.cm = cm;
+
+              window.openEditor = () => {
+                document.getElementById('host').style.display = 'block';
+              };
+
+              window.getTarget = () => {
+                const line = 6;
+                const needle = '57Blocks delivered';
+                const logical = cm.getLine(line);
+                const expectedCh = logical.indexOf(needle) + 3;
+                const pre = document.querySelectorAll('.CodeMirror-code pre.CodeMirror-line')[line];
+                if (!pre) throw new Error(`Missing rendered line ${line}`);
+
+                const walker = document.createTreeWalker(pre, NodeFilter.SHOW_TEXT);
+                let remaining = expectedCh;
+                let node;
+                while ((node = walker.nextNode())) {
+                  if (remaining <= node.textContent.length) {
+                    const range = document.createRange();
+                    range.setStart(node, Math.min(remaining, node.textContent.length - 1));
+                    range.setEnd(node, Math.min(remaining + 1, node.textContent.length));
+                    const rect = range.getBoundingClientRect();
+                    return {
+                      line,
+                      ch: expectedCh,
+                      x: rect.left + Math.max(1, rect.width / 2),
+                      y: rect.top + Math.max(1, rect.height / 2),
+                      rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+                    };
+                  }
+                  remaining -= node.textContent.length;
+                }
+                throw new Error('Could not locate target character');
+              };
+            </script>
+          </body>
+          </html>
+          HTML
+
+          cat > /tmp/probe.spec.cjs <<'JS'
+          const { test, expect } = require('@playwright/test');
+
+          test('hidden-to-expanded CodeMirror needs refresh for cursor geometry', async ({ page }) => {
+            await page.goto('http://127.0.0.1:4173/tmp/probe.html');
+            await page.evaluate(() => window.openEditor());
+            await page.waitForTimeout(100);
+
+            const before = await page.evaluate(() => window.getTarget());
+            expect(before.rect.width).toBeGreaterThan(0);
+            expect(before.rect.height).toBeGreaterThan(0);
+            await page.mouse.click(before.x, before.y);
+            const staleCursor = await page.evaluate(() => window.cm.getCursor());
+
+            await page.evaluate(() => window.cm.refresh());
+            await page.waitForTimeout(50);
+            const after = await page.evaluate(() => window.getTarget());
+            await page.mouse.click(after.x, after.y);
+            const refreshedCursor = await page.evaluate(() => window.cm.getCursor());
+
+            console.log(JSON.stringify({ before, staleCursor, after, refreshedCursor }));
+
+            const staleMatches = staleCursor.line === before.line && Math.abs(staleCursor.ch - before.ch) <= 1;
+            const refreshedMatches = refreshedCursor.line === after.line && Math.abs(refreshedCursor.ch - after.ch) <= 1;
+
+            expect(staleMatches, 'negative control: stale geometry unexpectedly mapped the target correctly').toBe(false);
+            expect(refreshedMatches, 'refresh should restore cursor mapping for the same rendered target').toBe(true);
+          });
+          JS
+
+          mkdir -p tmp
+          cp /tmp/probe.html tmp/probe.html
+          cp /tmp/probe.spec.cjs tmp/probe.spec.cjs
+
+      - name: Run geometry probe
+        run: |
+          python3 -m http.server 4173 >/tmp/probe-server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID || true' EXIT
+          yarn playwright test tmp/probe.spec.cjs --browser=chromium --reporter=line
+
+      - name: Verify source remained unchanged
+        if: always()
+        run: |
+          rm -rf tmp
+          test "$(git rev-parse HEAD)" = "a82c2d8bab32d61eb8399f6f3b244cbcc03cca13"
+          git diff --exit-code
