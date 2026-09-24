@@ -13,13 +13,15 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
   SOURCE_SHA: e1d16bf981c7d9fbf7c975464ef6cfca1138e6ea
 
 jobs:
   baseline:
     if: github.repository == 'dijedontahiri/strapi'
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
     steps:
       - name: Preflight
         run: |
@@ -30,16 +32,18 @@ jobs:
         with:
           repository: dijedontahiri/strapi
           ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 0
           persist-credentials: false
       - name: Setup Node 22
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: yarn
       - name: Enable Corepack
         run: corepack enable
       - name: Install
         run: yarn install --immutable
+      - name: Build admin package and dependencies
+        run: yarn nx run @strapi/admin:build --nx-ignore-cycles --parallel=2
       - name: Prove baseline regression
         shell: bash
         run: |
@@ -57,4 +61,4 @@ jobs:
       - name: Verify exact source
         run: |
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-          git diff --exit-code
+          test -z "$(git status --porcelain)"
