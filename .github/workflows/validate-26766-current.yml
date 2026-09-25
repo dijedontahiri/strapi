@@ -1,0 +1,74 @@
+name: Validate #26766 current base
+
+on:
+  push:
+    branches:
+      - validate/26766-current-r3-20260925
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    env:
+      CANDIDATE: bea136ef2ece1370a56cb4844bdfb49810dd9629
+      BASE: e7b2af3a79dbdfff3b03c025dca5201c491854dc
+      TEST_FILE: packages/core/content-manager/server/src/services/utils/configuration/__tests__/layouts.test.ts
+      SOURCE_FILE: packages/core/content-manager/server/src/services/utils/configuration/layouts.ts
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.CANDIDATE }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify exact source
+        run: test "$(git rev-parse HEAD)" = "$CANDIDATE"
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install dependencies
+        uses: ./.github/actions/yarn-nm-install
+      - name: Build monorepo
+        run: yarn build
+      - name: Prove baseline regression
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          set -o pipefail
+          git checkout "$BASE" -- "$SOURCE_FILE"
+          set +e
+          yarn workspace @strapi/content-manager test:unit --runInBand "$TEST_FILE" -t "should follow schema order when the stored edit layout is still the generated default" 2>&1 | tee /tmp/baseline.log
+          code=${PIPESTATUS[0]}
+          set -e
+          if [ "$code" -eq 0 ]; then
+            echo "Baseline unexpectedly passed"
+            exit 1
+          fi
+          grep -F "should follow schema order when the stored edit layout is still the generated default" /tmp/baseline.log
+          grep -E "1 failed" /tmp/baseline.log
+          git checkout "$CANDIDATE" -- "$SOURCE_FILE"
+      - name: Focused layout regressions
+        run: yarn workspace @strapi/content-manager test:unit --runInBand "$TEST_FILE"
+      - name: Full content-manager unit suite
+        run: yarn workspace @strapi/content-manager test:unit --runInBand
+      - name: Content-manager server typecheck
+        run: yarn workspace @strapi/content-manager test:ts:back
+      - name: Content-manager lint
+        run: yarn workspace @strapi/content-manager lint
+      - name: Changed-file formatting
+        run: yarn prettier --check "$SOURCE_FILE" "$TEST_FILE"
+      - name: Verify exact final tree
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$CANDIDATE"
+          git diff --exit-code
+          test -z "$(git status --porcelain)"
