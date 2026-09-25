@@ -1,0 +1,148 @@
+name: Validate #26766 current tree
+
+on:
+  push:
+    branches:
+      - validation/26766-current-r6-20260925
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-26766-current-r6
+  cancel-in-progress: false
+
+env:
+  BASE_SHA: f10112c566bc827a9ce31d8c806384326fa785a7
+  CANDIDATE_SHA: 6b8b058497e8053ce8489587509b12d40827d682
+  SOURCE_FILE: packages/core/content-manager/server/src/services/utils/configuration/layouts.ts
+  TEST_FILE: packages/core/content-manager/server/src/services/utils/configuration/__tests__/layouts.test.ts
+
+jobs:
+  verify:
+    if: github.repository == 'dijedontahiri/strapi' && github.ref == 'refs/heads/validation/26766-current-r6-20260925'
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - name: Checkout immutable candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+          cache: yarn
+
+      - name: Verify exact source and diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          actual="$(git diff --name-only "$BASE_SHA" "$CANDIDATE_SHA" | sort)"
+          expected="$(printf '%s\n%s\n' "$SOURCE_FILE" "$TEST_FILE" | sort)"
+          test "$actual" = "$expected"
+          git diff --check "$BASE_SHA" "$CANDIDATE_SHA"
+
+      - name: Install
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          yarn install --immutable
+
+      - name: Build code
+        run: yarn build:code --parallel=2
+
+      - name: Prove baseline regression
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          set -euo pipefail
+          git show "$BASE_SHA:$SOURCE_FILE" > "$SOURCE_FILE"
+          set +e
+          yarn workspace @strapi/content-manager test:unit --runInBand "$TEST_FILE" --testNamePattern="should follow schema order when the stored edit layout is still the generated default"
+          status=$?
+          set -e
+          git checkout -- "$SOURCE_FILE"
+          if [ "$status" -eq 0 ]; then
+            echo "Baseline unexpectedly passed the reorder regression"
+            exit 1
+          fi
+
+      - name: Run focused regression
+        run: yarn workspace @strapi/content-manager test:unit --runInBand "$TEST_FILE"
+
+      - name: Run complete content-manager unit suite
+        run: yarn workspace @strapi/content-manager test:unit --runInBand
+
+      - name: Type-check content-manager server
+        run: yarn workspace @strapi/content-manager test:ts:back
+
+      - name: Type-check content-manager frontend
+        run: yarn workspace @strapi/content-manager test:ts:front
+
+      - name: Lint content-manager
+        run: yarn workspace @strapi/content-manager lint
+
+      - name: Check changed-file formatting
+        run: yarn prettier --check "$SOURCE_FILE" "$TEST_FILE"
+
+      - name: Verify clean exact tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+
+  e2e:
+    if: github.repository == 'dijedontahiri/strapi' && github.ref == 'refs/heads/validation/26766-current-r6-20260925'
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    steps:
+      - name: Checkout immutable candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 0
+
+      - name: Set up Node 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22
+          cache: yarn
+
+      - name: Verify exact source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          git diff --check "$BASE_SHA" "$CANDIDATE_SHA"
+
+      - name: Install
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          yarn install --immutable
+
+      - name: Install Playwright browsers
+        run: yarn playwright install
+
+      - name: Build code
+        run: yarn build:code --parallel=2
+
+      - name: Run CE content-manager browser E2E
+        run: yarn test:e2e:ce --setup --concurrency=1 --domains content-manager
+
+      - name: Verify clean source checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
