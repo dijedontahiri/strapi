@@ -79,10 +79,7 @@ describe('Layouts', () => {
 
     const layout = await syncLayouts(configuration, schema);
 
-    expect(layout.edit).toEqual([
-      [{ name: 'title', size: 12 }],
-      [{ name: 'nodes', size: 12 }],
-    ]);
+    expect(layout.edit).toEqual([[{ name: 'title', size: 12 }], [{ name: 'nodes', size: 12 }]]);
   });
 
   it('should append new fields at the end of the layouts', async () => {
