@@ -1,0 +1,95 @@
+name: Validate #26766 current r7
+
+on:
+  push:
+    branches:
+      - validation/26766-current-r7-20260925
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-26766-current-r7-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NX_DAEMON: 'false'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+  BASE_SHA: f10112c566bc827a9ce31d8c806384326fa785a7
+  CANDIDATE_SHA: 6b8b058497e8053ce8489587509b12d40827d682
+  SOURCE_FILE: packages/core/content-manager/server/src/services/utils/configuration/layouts.ts
+  TEST_FILE: packages/core/content-manager/server/src/services/utils/configuration/__tests__/layouts.test.ts
+
+jobs:
+  verify:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - name: Checkout immutable candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 6b8b058497e8053ce8489587509b12d40827d682
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Verify exact source and diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          actual="$(git diff --name-only "$BASE_SHA" "$CANDIDATE_SHA" | sort)"
+          expected="$(printf '%s\n%s\n' "$SOURCE_FILE" "$TEST_FILE" | sort)"
+          test "$actual" = "$expected"
+          git diff --check "$BASE_SHA" "$CANDIDATE_SHA"
+      - name: Install
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          yarn install --immutable
+      - name: Build content-manager and declaration dependencies
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: yarn nx run @strapi/content-manager:build --nx-ignore-cycles --parallel=2
+      - name: Prove baseline regression
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          set -euo pipefail
+          git show "$BASE_SHA:$SOURCE_FILE" > "$SOURCE_FILE"
+          set +e
+          yarn workspace @strapi/content-manager test:unit --runInBand "$TEST_FILE" --testNamePattern="should follow schema order when the stored edit layout is still the generated default"
+          status=$?
+          set -e
+          git checkout "$CANDIDATE_SHA" -- "$SOURCE_FILE"
+          if [ "$status" -eq 0 ]; then
+            echo "Baseline unexpectedly passed the reorder regression"
+            exit 1
+          fi
+      - name: Run focused regression
+        run: yarn workspace @strapi/content-manager test:unit --runInBand "$TEST_FILE"
+      - name: Run complete content-manager unit suite
+        run: yarn workspace @strapi/content-manager test:unit --runInBand
+      - name: Type-check content-manager server
+        run: yarn workspace @strapi/content-manager test:ts:back
+      - name: Type-check content-manager frontend
+        run: yarn workspace @strapi/content-manager test:ts:front
+      - name: Lint content-manager
+        run: yarn workspace @strapi/content-manager lint
+      - name: Check changed-file formatting
+        run: yarn prettier --check "$SOURCE_FILE" "$TEST_FILE"
+      - name: Verify clean exact tree
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          git diff --exit-code
+          git diff --cached --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
