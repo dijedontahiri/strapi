@@ -1,0 +1,98 @@
+name: Validate #26766 exact product tree
+
+on:
+  push:
+    branches:
+      - validation/26766-current-r8
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 6b8b058497e8053ce8489587509b12d40827d682
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install
+        run: |
+          corepack enable
+          yarn install --immutable
+      - name: Build affected package
+        run: yarn nx run @strapi/content-manager:build --nx-ignore-cycles --parallel=2
+      - name: Baseline negative control
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          set -euo pipefail
+          file=packages/core/content-manager/server/src/services/utils/configuration/layouts.ts
+          git show f10112c566bc827a9ce31d8c806384326fa785a7:"$file" > "$file"
+          set +e
+          yarn workspace @strapi/content-manager test:unit server/src/services/utils/configuration/__tests__/layouts.test.ts --runInBand -t "should follow schema order when the stored edit layout is still the generated default" 2>&1 | tee /tmp/baseline.log
+          status=${PIPESTATUS[0]}
+          set -e
+          git checkout -- "$file"
+          if [ "$status" -eq 0 ]; then
+            echo "Baseline unexpectedly passed the regression"
+            exit 1
+          fi
+          grep -F "should follow schema order when the stored edit layout is still the generated default" /tmp/baseline.log
+          grep -F "Expected" /tmp/baseline.log
+      - name: Focused regression
+        run: yarn workspace @strapi/content-manager test:unit server/src/services/utils/configuration/__tests__/layouts.test.ts --runInBand
+      - name: Complete content-manager unit suite
+        run: yarn workspace @strapi/content-manager test:unit --runInBand
+      - name: Server typecheck
+        run: yarn workspace @strapi/content-manager test:ts:back
+      - name: Frontend typecheck
+        run: yarn workspace @strapi/content-manager test:ts:front
+      - name: Package lint
+        run: yarn workspace @strapi/content-manager lint
+      - name: Changed-file formatting
+        run: yarn prettier --check packages/core/content-manager/server/src/services/utils/configuration/layouts.ts packages/core/content-manager/server/src/services/utils/configuration/__tests__/layouts.test.ts
+      - name: Frontend suite
+        if: matrix.node == 22
+        run: yarn workspace @strapi/content-manager test:front --runInBand
+      - name: Verify exact source and clean tree
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "6b8b058497e8053ce8489587509b12d40827d682"
+          git diff --exit-code
+
+  e2e:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 6b8b058497e8053ce8489587509b12d40827d682
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - name: Monorepo install
+        uses: ./.github/actions/yarn-nm-install
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Monorepo build
+        uses: ./.github/actions/run-build
+      - name: Content Manager CE browser suite
+        uses: ./.github/actions/run-e2e-tests
+        with:
+          runEE: false
+          domains: content-manager
+          jestOptions: '--project=chromium'
+      - name: Verify exact source
+        run: test "$(git rev-parse HEAD)" = "6b8b058497e8053ce8489587509b12d40827d682"
