@@ -1,0 +1,94 @@
+name: Validate 26766 exact current
+
+on:
+  push:
+    branches:
+      - validation/26766-exact-current-r7
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.repository == 'dijedontahiri/strapi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - name: Checkout exact product candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 6b8b058497e8053ce8489587509b12d40827d682
+          fetch-depth: 0
+
+      - name: Verify immutable source
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "6b8b058497e8053ce8489587509b12d40827d682"
+          test "$(git merge-base HEAD f10112c566bc827a9ce31d8c806384326fa785a7)" = "f10112c566bc827a9ce31d8c806384326fa785a7"
+          test "$(git diff --name-only f10112c566bc827a9ce31d8c806384326fa785a7..HEAD | wc -l | tr -d ' ')" = "2"
+          git diff --name-only f10112c566bc827a9ce31d8c806384326fa785a7..HEAD | grep -Fx 'packages/core/content-manager/server/src/services/utils/configuration/layouts.ts'
+          git diff --name-only f10112c566bc827a9ce31d8c806384326fa785a7..HEAD | grep -Fx 'packages/core/content-manager/server/src/services/utils/configuration/__tests__/layouts.test.ts'
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Install dependencies
+        uses: ./.github/actions/yarn-nm-install
+        with:
+          cache-prefix: validate-26766-exact-r7
+
+      - name: Build monorepo
+        uses: ./.github/actions/run-build
+
+      - name: Baseline negative control
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          git checkout f10112c566bc827a9ce31d8c806384326fa785a7 -- packages/core/content-manager/server/src/services/utils/configuration/layouts.ts
+          set +e
+          OUTPUT=$(yarn workspace @strapi/content-manager test:unit server/src/services/utils/configuration/__tests__/layouts.test.ts --runInBand --testNamePattern='should follow schema order when the stored edit layout is still the generated default' 2>&1)
+          STATUS=$?
+          set -e
+          printf '%s\n' "$OUTPUT"
+          test "$STATUS" -ne 0
+          printf '%s\n' "$OUTPUT" | grep -F 'should follow schema order when the stored edit layout is still the generated default'
+          printf '%s\n' "$OUTPUT" | grep -E 'Expected|Received'
+          git checkout 6b8b058497e8053ce8489587509b12d40827d682 -- packages/core/content-manager/server/src/services/utils/configuration/layouts.ts
+
+      - name: Focused regression
+        shell: bash
+        run: yarn workspace @strapi/content-manager test:unit server/src/services/utils/configuration/__tests__/layouts.test.ts --runInBand
+
+      - name: Content Manager server unit suite
+        shell: bash
+        run: yarn workspace @strapi/content-manager test:unit --runInBand
+
+      - name: Content Manager server typecheck
+        shell: bash
+        run: yarn workspace @strapi/content-manager test:ts:back
+
+      - name: Content Manager lint
+        shell: bash
+        run: yarn workspace @strapi/content-manager lint
+
+      - name: Changed-file formatting
+        shell: bash
+        run: yarn prettier --check packages/core/content-manager/server/src/services/utils/configuration/layouts.ts packages/core/content-manager/server/src/services/utils/configuration/__tests__/layouts.test.ts
+
+      - name: Content Manager browser E2E
+        if: matrix.node == 22
+        shell: bash
+        run: yarn test:e2e --setup --domains content-manager --concurrency=1
+
+      - name: Verify final exact source and clean tracked tree
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "6b8b058497e8053ce8489587509b12d40827d682"
+          git diff --exit-code
+          git diff --cached --exit-code
+          test -z "$(git status --porcelain --untracked-files=no)"
